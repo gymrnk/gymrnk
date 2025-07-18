@@ -1,0 +1,421 @@
+// controllers/workoutController.js
+const Workout = require('../models/Workout');
+const Exercise = require('../models/Exercise');
+const RankingSystem = require('../services/rankingSystem');
+const rankingQueue = require('../services/rankingQueue');
+const StreakService = require('../services/streakService');
+
+
+// Create a new workout
+exports.createWorkout = async (req, res) => {
+  try {
+    const { exercises, duration, notes, date } = req.body;
+    
+    // Validate exercises
+    if (!exercises || exercises.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Workout must contain at least one exercise'
+      });
+    }
+    
+    // Create workout with exerciseId references
+    const workout = new Workout({
+      user: req.user.id,
+      date: date || new Date(),
+      duration: Math.max(1, parseInt(duration) || 1),
+      notes: notes || '',
+      exercises: exercises.map(ex => ({
+        exercise: ex.exerciseId, // Store as exercise field for consistency
+        exerciseId: ex.exerciseId, // Also store as exerciseId for compatibility
+        sets: ex.sets.map(set => ({
+          reps: Math.max(1, parseInt(set.reps) || 1),
+          weight: Math.max(0, parseFloat(set.weight) || 0),
+          restTime: set.restTime ? parseInt(set.restTime) : undefined,
+          tempo: set.tempo || undefined,
+          rpe: set.rpe ? Math.min(10, Math.max(1, parseInt(set.rpe))) : undefined
+        })).filter(set => set.reps > 0), // Filter out invalid sets
+        notes: ex.notes || ''
+      })).filter(ex => ex.sets.length > 0) // Filter out exercises with no valid sets
+    });
+    
+    // Validate that we still have exercises after filtering
+    if (workout.exercises.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Workout must contain at least one valid exercise with valid sets'
+      });
+    }
+    
+    // Save workout first
+    await workout.save();
+    
+    const userTimezone = req.headers['x-timezone'] || 'UTC';
+    try {
+      await StreakService.updateStreak(req.user._id || req.user.id, workout.date, userTimezone);
+      console.log('Streak updated successfully for user:', req.user._id);
+    } catch (streakError) {
+      console.error('Failed to update streak:', streakError);
+      // Don't fail the workout creation if streak update fails
+    }
+
+    // Populate exercises for score calculation
+    await workout.populate('exercises.exercise exercises.exerciseId');
+    
+    // Calculate hypertrophy score
+    console.log(`Calculating score for new workout ${workout._id}`);
+    const scores = await RankingSystem.calculateWorkoutScore(workout);
+    workout.hypertrophyScore = scores;
+    await workout.save();
+    
+    // Determine which muscle groups were affected
+    const muscleGroupsAffected = new Set(['overall']); // Always update overall
+    workout.exercises.forEach(ex => {
+      if (ex.exercise && ex.exercise.muscleGroup) {
+        muscleGroupsAffected.add(ex.exercise.muscleGroup.toLowerCase());
+      }
+    });
+    
+    // Add ranking updates to the queue for asynchronous processing
+    rankingQueue.addUpdate(
+      req.user.id,
+      Array.from(muscleGroupsAffected),
+      ['weekly', 'monthly', 'allTime']
+    );
+    
+    // Return populated workout immediately
+    res.status(201).json({
+      success: true,
+      data: workout
+    });
+  } catch (error) {
+    console.error('Error creating workout:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to create workout',
+      error: error.message
+    });
+  }
+};
+
+// Get user's workouts
+exports.getMyWorkouts = async (req, res) => {
+  try {
+    const { page = 1, limit = 20, startDate, endDate } = req.query;
+    
+    const query = { user: req.user.id };
+    
+    // Add date filters if provided
+    if (startDate || endDate) {
+      query.date = {};
+      if (startDate) query.date.$gte = new Date(startDate);
+      if (endDate) query.date.$lte = new Date(endDate);
+    }
+    
+    const workouts = await Workout.find(query)
+      .sort({ date: -1 })
+      .limit(limit * 1)
+      .skip((page - 1) * limit)
+      .populate('exercises.exercise');
+    
+    const total = await Workout.countDocuments(query);
+    
+    res.json({
+      success: true,
+      data: workouts,
+      pagination: {
+        total,
+        page: parseInt(page),
+        pages: Math.ceil(total / limit)
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching workouts:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch workouts',
+      error: error.message
+    });
+  }
+};
+
+// Get workout statistics
+exports.getWorkoutStats = async (req, res) => {
+  try {
+    const { period = 'weekly' } = req.query;
+    
+    // Calculate date range
+    const now = new Date();
+    let startDate;
+    
+    switch (period) {
+      case 'weekly':
+        startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+        break;
+      case 'monthly':
+        startDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+        break;
+      case 'yearly':
+        startDate = new Date(now.getTime() - 365 * 24 * 60 * 60 * 1000);
+        break;
+      case 'allTime':
+        startDate = new Date(0);
+        break;
+      default:
+        startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+    }
+    
+    const workouts = await Workout.find({
+      user: req.user.id,
+      date: { $gte: startDate }
+    }).populate('exercises.exercise');
+    
+    // Calculate statistics
+    const stats = {
+      totalWorkouts: workouts.length,
+      totalDuration: 0,
+      totalVolume: 0,
+      exerciseFrequency: {},
+      muscleGroupVolume: {
+        chest: 0,
+        back: 0,
+        shoulders: 0,
+        biceps: 0,
+        triceps: 0,
+        legs: 0,
+        abs: 0
+      },
+      hypertrophyScores: {
+        total: 0,
+        byMuscleGroup: {
+          chest: 0,
+          back: 0,
+          shoulders: 0,
+          biceps: 0,
+          triceps: 0,
+          legs: 0,
+          abs: 0
+        }
+      }
+    };
+    
+    workouts.forEach(workout => {
+      stats.totalDuration += workout.duration || 0;
+      
+      // Add hypertrophy scores
+      if (workout.hypertrophyScore) {
+        stats.hypertrophyScores.total += workout.hypertrophyScore.total || 0;
+        Object.entries(workout.hypertrophyScore.byMuscleGroup || {}).forEach(([muscle, score]) => {
+          if (stats.hypertrophyScores.byMuscleGroup[muscle] !== undefined) {
+            stats.hypertrophyScores.byMuscleGroup[muscle] += score || 0;
+          }
+        });
+      }
+      
+      workout.exercises.forEach(ex => {
+        if (ex.exercise) {
+          // Track exercise frequency
+          const exerciseName = ex.exercise.name;
+          stats.exerciseFrequency[exerciseName] = (stats.exerciseFrequency[exerciseName] || 0) + 1;
+          
+          // Calculate volume by muscle group
+          const muscleGroup = ex.exercise.muscleGroup;
+          let exerciseVolume = 0;
+          
+          ex.sets.forEach(set => {
+            const volume = set.reps * set.weight;
+            exerciseVolume += volume;
+            stats.totalVolume += volume;
+          });
+          
+          if (stats.muscleGroupVolume[muscleGroup] !== undefined) {
+            stats.muscleGroupVolume[muscleGroup] += exerciseVolume;
+          }
+        }
+      });
+    });
+    
+    // Add averages
+    if (stats.totalWorkouts > 0) {
+      stats.averageDuration = Math.round(stats.totalDuration / stats.totalWorkouts);
+      stats.averageVolume = Math.round(stats.totalVolume / stats.totalWorkouts);
+    }
+    
+    res.json({
+      success: true,
+      data: stats
+    });
+  } catch (error) {
+    console.error('Error fetching workout stats:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch workout statistics',
+      error: error.message
+    });
+  }
+};
+
+// Get a single workout
+exports.getWorkout = async (req, res) => {
+  try {
+    const workout = await Workout.findOne({
+      _id: req.params.id,
+      user: req.user.id
+    }).populate('exercises.exercise');
+    
+    if (!workout) {
+      return res.status(404).json({
+        success: false,
+        message: 'Workout not found'
+      });
+    }
+    
+    res.json({
+      success: true,
+      data: workout
+    });
+  } catch (error) {
+    console.error('Error fetching workout:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch workout',
+      error: error.message
+    });
+  }
+};
+
+// Update a workout
+exports.updateWorkout = async (req, res) => {
+  try {
+    const { exercises, duration, notes } = req.body;
+    
+    const workout = await Workout.findOne({
+      _id: req.params.id,
+      user: req.user.id
+    });
+    
+    if (!workout) {
+      return res.status(404).json({
+        success: false,
+        message: 'Workout not found'
+      });
+    }
+    
+    // Track old muscle groups to update their rankings
+    const oldMuscleGroups = new Set(['overall']);
+    if (workout.exercises) {
+      await workout.populate('exercises.exercise');
+      workout.exercises.forEach(ex => {
+        if (ex.exercise && ex.exercise.muscleGroup) {
+          oldMuscleGroups.add(ex.exercise.muscleGroup.toLowerCase());
+        }
+      });
+    }
+    
+    // Update fields if provided
+    if (exercises) {
+      workout.exercises = exercises.map(ex => ({
+        exercise: ex.exerciseId,
+        exerciseId: ex.exerciseId,
+        sets: ex.sets.map(set => ({
+          reps: Math.max(1, parseInt(set.reps) || 1),
+          weight: Math.max(0, parseFloat(set.weight) || 0),
+          restTime: set.restTime ? parseInt(set.restTime) : undefined,
+          tempo: set.tempo || undefined,
+          rpe: set.rpe ? Math.min(10, Math.max(1, parseInt(set.rpe))) : undefined
+        })).filter(set => set.reps > 0),
+        notes: ex.notes || ''
+      })).filter(ex => ex.sets.length > 0);
+    }
+    
+    if (duration !== undefined) workout.duration = Math.max(1, parseInt(duration) || 1);
+    if (notes !== undefined) workout.notes = notes;
+    
+    await workout.save();
+    
+    // Recalculate hypertrophy score
+    await workout.populate('exercises.exercise');
+    const scores = await RankingSystem.calculateWorkoutScore(workout);
+    workout.hypertrophyScore = scores;
+    await workout.save();
+    
+    // Get new muscle groups
+    const newMuscleGroups = new Set(['overall']);
+    workout.exercises.forEach(ex => {
+      if (ex.exercise && ex.exercise.muscleGroup) {
+        newMuscleGroups.add(ex.exercise.muscleGroup.toLowerCase());
+      }
+    });
+    
+    // Combine old and new muscle groups
+    const allAffectedMuscleGroups = new Set([...oldMuscleGroups, ...newMuscleGroups]);
+    
+    // Add ranking updates to the queue
+    rankingQueue.addUpdate(
+      req.user.id,
+      Array.from(allAffectedMuscleGroups),
+      ['weekly', 'monthly', 'allTime']
+    );
+    
+    res.json({
+      success: true,
+      data: workout
+    });
+  } catch (error) {
+    console.error('Error updating workout:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update workout',
+      error: error.message
+    });
+  }
+};
+
+// Delete a workout
+exports.deleteWorkout = async (req, res) => {
+  try {
+    const workout = await Workout.findOne({
+      _id: req.params.id,
+      user: req.user.id
+    }).populate('exercises.exercise');
+    
+    if (!workout) {
+      return res.status(404).json({
+        success: false,
+        message: 'Workout not found'
+      });
+    }
+    
+    // Track affected muscle groups before deletion
+    const affectedMuscleGroups = new Set(['overall']);
+    workout.exercises.forEach(ex => {
+      if (ex.exercise && ex.exercise.muscleGroup) {
+        affectedMuscleGroups.add(ex.exercise.muscleGroup.toLowerCase());
+      }
+    });
+    
+    // Delete the workout
+    await workout.deleteOne();
+    
+    // Add ranking updates to the queue
+    rankingQueue.addUpdate(
+      req.user.id,
+      Array.from(affectedMuscleGroups),
+      ['weekly', 'monthly', 'allTime']
+    );
+    
+    res.json({
+      success: true,
+      message: 'Workout deleted successfully'
+    });
+  } catch (error) {
+    console.error('Error deleting workout:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to delete workout',
+      error: error.message
+    });
+  }
+};
+
+module.exports = exports;
