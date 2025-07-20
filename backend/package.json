@@ -10,6 +10,7 @@
     "seed": "node scripts/seedDatabase.js",
     "seed:sample": "node scripts/generateSampleData.js",
     "seed:fast": "node scripts/generateSampleDataFast.js",
+    "rolling" : "node scripts/fixRollingWindowRankings.js",
     "debug": "node scripts/debugDatabase.js",
     "update-rankings": "node scripts/updateRankings.js",
     "fixZeros": "node scripts/fixZeroScores.js",

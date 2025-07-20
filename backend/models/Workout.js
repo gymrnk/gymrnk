@@ -68,6 +68,14 @@ const workoutSchema = new mongoose.Schema({
       abs: { type: Number, default: 0 }
     }
   },
+  processedWeeklyExpiry: {
+    type: Boolean,
+    sparse: true
+  },
+  processedMonthlyExpiry: {
+    type: Boolean,
+    sparse: true
+  },
   notes: String
 }, {
   timestamps: true
