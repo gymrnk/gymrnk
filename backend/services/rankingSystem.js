@@ -3,6 +3,8 @@ const User = require('../models/User');
 const Workout = require('../models/Workout');
 const Ranking = require('../models/Ranking');
 const Exercise = require('../models/Exercise');
+const WorkoutValidationService = require('./workoutValidationService');
+
 
 // Tier thresholds based on percentiles
 const TIER_SYSTEM = {
@@ -50,75 +52,82 @@ class RankingSystem {
    * Calculate hypertrophy score for a single set
    * Rewards: volume, time under tension, moderate rep ranges (8-12)
    */
-  static calculateSetScore(set, exercise) {
-    try {
-      // Parse and validate inputs with more robust handling
-      const reps = this.parseNumber(set.reps);
-      const weight = this.parseNumber(set.weight);
-      
-      // Log for debugging
-      console.log(`Set calculation - Reps: ${reps}, Weight: ${weight}, Exercise: ${exercise?.name}`);
-      
-      // Both reps and weight must be positive numbers
-      if (reps <= 0 || weight <= 0) {
-        console.log(`Invalid set data: reps=${reps}, weight=${weight}`);
-        return 0;
-      }
-      
-      // Base volume (reps * weight)
-      let score = reps * weight;
-      
-      // Optimal rep range multiplier (peak at 8-12 reps for hypertrophy)
-      let repMultiplier = 1.0;
-      if (reps >= 8 && reps <= 12) {
-        repMultiplier = 1.5;
-      } else if (reps >= 6 && reps <= 15) {
-        repMultiplier = 1.2;
-      } else if (reps < 6) {
-        repMultiplier = 0.8; // Less effective for hypertrophy
-      } else if (reps > 20) {
-        repMultiplier = 0.7; // Endurance range
-      }
-      
-      // Time under tension multiplier
-      let tempoMultiplier = 1.0;
-      if (set.tempo && typeof set.tempo === 'string') {
-        try {
-          const tempoNumbers = set.tempo.split('-').map(n => parseInt(n) || 0);
-          const totalTempo = tempoNumbers.reduce((a, b) => a + b, 0);
-          if (totalTempo >= 4) tempoMultiplier = 1.3; // Good TUT
-          if (totalTempo >= 6) tempoMultiplier = 1.5; // Excellent TUT
-        } catch (e) {
-          console.log('Error parsing tempo:', e);
-        }
-      }
-      
-      // RPE multiplier (effort matters, but not too much)
-      let rpeMultiplier = 1.0;
-      const rpe = this.parseNumber(set.rpe);
-      if (rpe >= 7) rpeMultiplier = 1.1;
-      if (rpe >= 8) rpeMultiplier = 1.2;
-      
-      // Apply exercise-specific factors
-      let exerciseMultiplier = 1.0;
-      if (exercise && exercise.hypertrophyFactors) {
-        const factors = exercise.hypertrophyFactors;
-        exerciseMultiplier = 
-          (factors.timeUnderTension || 1.0) * 
-          (factors.muscleActivation || 1.0) * 
-          (factors.volumeWeight || 1.0);
-      }
-      
-      const finalScore = score * repMultiplier * tempoMultiplier * rpeMultiplier * exerciseMultiplier;
-      
-      console.log(`Final set score: ${finalScore} (base: ${score}, multipliers: rep=${repMultiplier}, tempo=${tempoMultiplier}, rpe=${rpeMultiplier}, exercise=${exerciseMultiplier})`);
-      
-      return Math.max(0, finalScore); // Ensure non-negative
-    } catch (error) {
-      console.error('Error calculating set score:', error);
+// Replace the calculateSetScore method with this updated version:
+static calculateSetScore(set, exercise) {
+  try {
+    // Parse and validate inputs
+    const reps = this.parseNumber(set.reps);
+    const weight = this.parseNumber(set.weight);
+    
+    if (reps <= 0 || weight <= 0) {
       return 0;
     }
+    
+    // NEW: Reduced base score calculation
+    // Instead of reps * weight, use a logarithmic scale to prevent huge numbers
+    // This gives diminishing returns for extremely high weights
+    const baseScore = Math.sqrt(reps * weight) * 10;
+    
+    // Optimal rep range multiplier (reduced from 1.5 to 1.2)
+    let repMultiplier = 1.0;
+    if (reps >= 8 && reps <= 12) {
+      repMultiplier = 1.2;  // Reduced from 1.5
+    } else if (reps >= 6 && reps <= 15) {
+      repMultiplier = 1.1;  // Reduced from 1.2
+    } else if (reps < 6) {
+      repMultiplier = 0.9;  // Slightly increased from 0.8
+    } else if (reps > 20) {
+      repMultiplier = 0.8;  // Slightly increased from 0.7
+    }
+    
+    // Time under tension multiplier (capped)
+    let tempoMultiplier = 1.0;
+    if (set.tempo && typeof set.tempo === 'string') {
+      try {
+        const tempoNumbers = set.tempo.split('-').map(n => parseInt(n) || 0);
+        const totalTempo = tempoNumbers.reduce((a, b) => a + b, 0);
+        if (totalTempo >= 4) tempoMultiplier = 1.1;  // Reduced from 1.3
+        if (totalTempo >= 6) tempoMultiplier = 1.15; // Reduced from 1.5
+      } catch (e) {
+        console.log('Error parsing tempo:', e);
+      }
+    }
+    
+    // RPE multiplier (reduced impact)
+    let rpeMultiplier = 1.0;
+    const rpe = this.parseNumber(set.rpe);
+    if (rpe >= 7) rpeMultiplier = 1.05;  // Reduced from 1.1
+    if (rpe >= 8) rpeMultiplier = 1.1;   // Reduced from 1.2
+    
+    // Apply exercise-specific factors (capped at 1.2x)
+    let exerciseMultiplier = 1.0;
+    if (exercise && exercise.hypertrophyFactors) {
+      const factors = exercise.hypertrophyFactors;
+      exerciseMultiplier = Math.min(1.2, 
+        (factors.timeUnderTension || 1.0) * 
+        (factors.muscleActivation || 1.0) * 
+        (factors.volumeWeight || 1.0)
+      );
+    }
+    
+    const finalScore = baseScore * repMultiplier * tempoMultiplier * rpeMultiplier * exerciseMultiplier;
+    
+    return Math.max(0, Math.round(finalScore)); // Round to whole number
+  } catch (error) {
+    console.error('Error calculating set score:', error);
+    return 0;
   }
+}
+
+static async applyConsistencyMultiplier(baseScore, userId) {
+  try {
+    const multiplier = await WorkoutValidationService.getConsistencyMultiplier(userId);
+    return Math.round(baseScore * multiplier);
+  } catch (error) {
+    console.error('Error applying consistency multiplier:', error);
+    return baseScore; // Return base score if error
+  }
+}
 
   /**
    * Helper to parse numbers safely
@@ -148,18 +157,17 @@ class RankingSystem {
     
     console.log(`Calculating workout score for workout ${workout._id}`);
     
+    let baseTotal = 0;
+    
     for (const exerciseData of workout.exercises) {
       try {
         // Handle both populated and non-populated exercises
         let exercise;
         if (exerciseData.exercise && typeof exerciseData.exercise === 'object' && exerciseData.exercise._id) {
-          // Already populated
           exercise = exerciseData.exercise;
         } else if (exerciseData.exerciseId) {
-          // Use exerciseId field
           exercise = await Exercise.findById(exerciseData.exerciseId);
         } else if (exerciseData.exercise) {
-          // exercise field contains ID
           exercise = await Exercise.findById(exerciseData.exercise);
         }
         
@@ -178,22 +186,20 @@ class RankingSystem {
           }
         }
         
-        console.log(`Exercise ${exercise.name} total score: ${exerciseScore}`);
+        baseTotal += exerciseScore;
         
         // Add to primary muscle group
         const primaryMuscle = exercise.muscleGroup?.toLowerCase();
         if (primaryMuscle && scoresByMuscleGroup.hasOwnProperty(primaryMuscle)) {
           scoresByMuscleGroup[primaryMuscle] += exerciseScore;
-        } else {
-          console.log(`Unknown muscle group: ${primaryMuscle}`);
         }
         
-        // Add partial credit to secondary muscles
+        // Add partial credit to secondary muscles (reduced to 20% from 30%)
         if (exercise.secondaryMuscles && Array.isArray(exercise.secondaryMuscles)) {
           for (const secondary of exercise.secondaryMuscles) {
             const secondaryMuscle = secondary?.toLowerCase();
             if (secondaryMuscle && scoresByMuscleGroup.hasOwnProperty(secondaryMuscle)) {
-              scoresByMuscleGroup[secondaryMuscle] += exerciseScore * 0.3;
+              scoresByMuscleGroup[secondaryMuscle] += exerciseScore * 0.2;
             }
           }
         }
@@ -202,10 +208,18 @@ class RankingSystem {
       }
     }
     
-    // Calculate total score
-    const totalScore = Object.values(scoresByMuscleGroup).reduce((a, b) => a + b, 0);
+    // Apply consistency multiplier to total
+    const totalScore = await this.applyConsistencyMultiplier(baseTotal, workout.user);
     
-    console.log(`Workout total score: ${totalScore}, by muscle group:`, scoresByMuscleGroup);
+    // Apply consistency multiplier to each muscle group
+    for (const muscle in scoresByMuscleGroup) {
+      scoresByMuscleGroup[muscle] = await this.applyConsistencyMultiplier(
+        scoresByMuscleGroup[muscle], 
+        workout.user
+      );
+    }
+    
+    console.log(`Workout total score: ${totalScore} (base: ${baseTotal}), by muscle group:`, scoresByMuscleGroup);
     
     return {
       total: totalScore,
