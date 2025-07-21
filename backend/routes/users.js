@@ -315,6 +315,61 @@ router.get('/search', auth, async (req, res) => {
   }
 });
 
+router.get('/consistency-stats', auth, async (req, res) => {
+  try {
+    const WorkoutValidationService = require('../services/workoutValidationService');
+    const Workout = require('../models/Workout');
+    const moment = require('moment');
+    
+    // Get current multiplier
+    const multiplier = await WorkoutValidationService.getConsistencyMultiplier(req.user._id);
+    
+    // Count workouts in last 7 days
+    const sevenDaysAgo = moment().subtract(7, 'days').startOf('day').toDate();
+    const workoutsThisWeek = await Workout.countDocuments({
+      user: req.user._id,
+      date: { $gte: sevenDaysAgo }
+    });
+    
+    // Determine current tier and next tier requirements
+    let currentTier, nextTierWorkouts;
+    
+    if (workoutsThisWeek === 0) {
+      currentTier = 'Inactive';
+      nextTierWorkouts = 1;
+    } else if (workoutsThisWeek === 1) {
+      currentTier = 'Starting';
+      nextTierWorkouts = 2;
+    } else if (workoutsThisWeek <= 3) {
+      currentTier = 'Baseline';
+      nextTierWorkouts = 4;
+    } else if (workoutsThisWeek <= 5) {
+      currentTier = 'Consistent';
+      nextTierWorkouts = 6;
+    } else {
+      currentTier = 'Elite';
+      nextTierWorkouts = null; // Already at max
+    }
+    
+    res.json({
+      multiplier,
+      workoutsThisWeek,
+      nextTierWorkouts,
+      currentTier,
+      multiplierBreakdown: {
+        '0': 0.5,
+        '1': 0.8,
+        '2-3': 1.0,
+        '4-5': 1.3,
+        '6-7': 1.5
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching consistency stats:', error);
+    res.status(500).json({ error: 'Failed to fetch consistency stats' });
+  }
+});
+
 // Get user profile (existing but updated to include new fields)
 router.get('/:id', auth, async (req, res) => {
   try {
@@ -582,59 +637,5 @@ router.get('/friend-requests/all', auth, async (req, res) => {
   }
 });
 
-router.get('/consistency-stats', auth, async (req, res) => {
-  try {
-    const WorkoutValidationService = require('../services/workoutValidationService');
-    const Workout = require('../models/Workout');
-    const moment = require('moment');
-    
-    // Get current multiplier
-    const multiplier = await WorkoutValidationService.getConsistencyMultiplier(req.user._id);
-    
-    // Count workouts in last 7 days
-    const sevenDaysAgo = moment().subtract(7, 'days').startOf('day').toDate();
-    const workoutsThisWeek = await Workout.countDocuments({
-      user: req.user._id,
-      date: { $gte: sevenDaysAgo }
-    });
-    
-    // Determine current tier and next tier requirements
-    let currentTier, nextTierWorkouts;
-    
-    if (workoutsThisWeek === 0) {
-      currentTier = 'Inactive';
-      nextTierWorkouts = 1;
-    } else if (workoutsThisWeek === 1) {
-      currentTier = 'Starting';
-      nextTierWorkouts = 2;
-    } else if (workoutsThisWeek <= 3) {
-      currentTier = 'Baseline';
-      nextTierWorkouts = 4;
-    } else if (workoutsThisWeek <= 5) {
-      currentTier = 'Consistent';
-      nextTierWorkouts = 6;
-    } else {
-      currentTier = 'Elite';
-      nextTierWorkouts = null; // Already at max
-    }
-    
-    res.json({
-      multiplier,
-      workoutsThisWeek,
-      nextTierWorkouts,
-      currentTier,
-      multiplierBreakdown: {
-        '0': 0.5,
-        '1': 0.8,
-        '2-3': 1.0,
-        '4-5': 1.3,
-        '6-7': 1.5
-      }
-    });
-  } catch (error) {
-    console.error('Error fetching consistency stats:', error);
-    res.status(500).json({ error: 'Failed to fetch consistency stats' });
-  }
-});
 
 module.exports = router;
