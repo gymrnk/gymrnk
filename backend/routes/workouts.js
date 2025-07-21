@@ -13,7 +13,7 @@ const rankingQueue = require('../services/rankingQueue');
 
 const router = express.Router();
 
-// Create workout
+// Create workout - FIXED VERSION
 router.post('/', auth, [
   body('date').optional().isISO8601(),
   body('exercises').isArray().notEmpty(),
@@ -60,6 +60,7 @@ router.post('/', auth, [
       date: date || new Date(),
       exercises: exercises.map(e => ({
         exercise: e.exerciseId,
+        exerciseId: e.exerciseId, // Ensure both fields are set
         sets: e.sets.map(set => ({
           reps: Math.min(100, Math.max(1, parseInt(set.reps) || 1)), // Cap at 100
           weight: Math.max(0, parseFloat(set.weight) || 0),
@@ -77,10 +78,31 @@ router.post('/', auth, [
       return res.status(400).json({ error: 'Workout must contain at least one valid exercise with valid sets' });
     }
     
-    // Calculate hypertrophy score (now includes consistency multiplier)
+    // IMPORTANT: Save the workout first to get an ID
+    await workout.save();
+    
+    // CRITICAL: Populate exercises BEFORE calculating scores
+    await workout.populate('exercises.exercise exercises.exerciseId');
+    
+    // NOW calculate hypertrophy score with populated exercises
+    console.log('Calculating scores for workout with exercises:', 
+      workout.exercises.map(ex => ({
+        name: ex.exercise?.name || 'Unknown',
+        muscleGroup: ex.exercise?.muscleGroup || 'Unknown'
+      }))
+    );
+    
     const scores = await RankingSystem.calculateWorkoutScore(workout);
+    
+    console.log('Calculated scores:', scores);
+    
+    // Set the scores
     workout.hypertrophyScore = scores;
     
+    // Mark as modified to ensure Mongoose saves the nested object
+    workout.markModified('hypertrophyScore');
+    
+    // Save again with the scores
     await workout.save();
     
     // UPDATE USER'S LAST WORKOUT DATE
@@ -96,8 +118,6 @@ router.post('/', auth, [
     } catch (streakError) {
       console.error('Failed to update streak:', streakError);
     }
-    
-    await workout.populate('exercises.exercise');
     
     // Determine which muscle groups were affected
     const muscleGroupsAffected = new Set(['overall']);
@@ -134,8 +154,8 @@ router.post('/', auth, [
       }
     });
   } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: 'Server error' });
+    console.error('Workout creation error:', error);
+    res.status(500).json({ error: 'Server error', details: error.message });
   }
 });
 
@@ -185,10 +205,8 @@ router.get('/stats', auth, async (req, res) => {
     let dateFilter;
     
     if (startDate) {
-      // If specific start date is provided, use it
       dateFilter = new Date(startDate);
     } else {
-      // Otherwise use period-based calculation
       switch (period) {
         case 'weekly':
           dateFilter = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
@@ -240,7 +258,7 @@ router.get('/stats', auth, async (req, res) => {
     };
     
     workouts.forEach(workout => {
-      // Aggregate hypertrophy scores - check if they exist
+      // Aggregate hypertrophy scores
       if (workout.hypertrophyScore) {
         stats.hypertrophyScores.total += workout.hypertrophyScore.total || 0;
         
@@ -256,7 +274,6 @@ router.get('/stats', auth, async (req, res) => {
       
       // Calculate volume and frequency
       workout.exercises.forEach(({ exercise, sets }) => {
-        // Skip if exercise wasn't populated (deleted exercise)
         if (!exercise) {
           console.warn(`Workout ${workout._id} has reference to deleted exercise`);
           return;
@@ -271,7 +288,7 @@ router.get('/stats', auth, async (req, res) => {
             (stats.exerciseFrequency[exercise.name] || 0) + 1;
         }
         
-        // Muscle group volume - check if muscle group exists and is valid
+        // Muscle group volume
         if (exercise.muscleGroup && stats.muscleGroupVolume.hasOwnProperty(exercise.muscleGroup)) {
           stats.muscleGroupVolume[exercise.muscleGroup] += volume;
         }
@@ -284,9 +301,29 @@ router.get('/stats', auth, async (req, res) => {
       stats.averageVolume = stats.totalVolume / workouts.length;
     }
     
-    // NEW: Add consistency multiplier to stats
-    const consistencyMultiplier = await WorkoutValidationService.getConsistencyMultiplier(req.user._id);
-    stats.currentMultiplier = consistencyMultiplier;
+    // Get consistency multiplier
+    const moment = require('moment');
+    const sevenDaysAgo = moment().subtract(7, 'days').startOf('day').toDate();
+    const workoutsThisWeek = await Workout.countDocuments({
+      user: req.user._id,
+      date: { $gte: sevenDaysAgo }
+    });
+    
+    let currentMultiplier;
+    if (workoutsThisWeek === 0) currentMultiplier = 0.5;
+    else if (workoutsThisWeek === 1) currentMultiplier = 0.8;
+    else if (workoutsThisWeek <= 3) currentMultiplier = 1.0;
+    else if (workoutsThisWeek <= 5) currentMultiplier = 1.3;
+    else currentMultiplier = 1.5;
+    
+    stats.currentMultiplier = currentMultiplier;
+    
+    // Round all hypertrophy scores
+    stats.hypertrophyScores.total = Math.round(stats.hypertrophyScores.total);
+    Object.keys(stats.hypertrophyScores.byMuscleGroup).forEach(muscle => {
+      stats.hypertrophyScores.byMuscleGroup[muscle] = 
+        Math.round(stats.hypertrophyScores.byMuscleGroup[muscle]);
+    });
     
     res.json(stats);
   } catch (error) {
@@ -384,6 +421,91 @@ router.post('/scoring-preview', auth, async (req, res) => {
   }
 });
 
+// Debug route to check scores
+router.get('/debug-scores', auth, async (req, res) => {
+  try {
+    const workouts = await Workout.find({
+      user: req.user._id,
+      date: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) }
+    })
+    .populate('exercises.exercise exercises.exerciseId')
+    .select('date hypertrophyScore exercises');
+    
+    const debug = workouts.map(w => ({
+      id: w._id,
+      date: w.date,
+      hasScore: !!w.hypertrophyScore,
+      total: w.hypertrophyScore?.total || 0,
+      byMuscleGroup: w.hypertrophyScore?.byMuscleGroup || {},
+      exercises: w.exercises.map(ex => ({
+        name: ex.exercise?.name || 'Unknown',
+        muscleGroup: ex.exercise?.muscleGroup || 'Unknown'
+      }))
+    }));
+    
+    const totals = debug.reduce((acc, w) => {
+      acc.total += w.total;
+      Object.entries(w.byMuscleGroup).forEach(([muscle, score]) => {
+        acc.byMuscleGroup[muscle] = (acc.byMuscleGroup[muscle] || 0) + score;
+      });
+      return acc;
+    }, { total: 0, byMuscleGroup: {} });
+    
+    res.json({
+      workoutCount: workouts.length,
+      totals: {
+        total: Math.round(totals.total),
+        byMuscleGroup: Object.fromEntries(
+          Object.entries(totals.byMuscleGroup).map(([k, v]) => [k, Math.round(v)])
+        )
+      },
+      workouts: debug
+    });
+  } catch (error) {
+    console.error('Debug error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Recalculate all scores for the user
+router.post('/recalculate-my-scores', auth, async (req, res) => {
+  try {
+    const workouts = await Workout.find({
+      user: req.user._id
+    });
+    
+    let updated = 0;
+    let errors = [];
+    
+    for (const workout of workouts) {
+      try {
+        // Populate exercises
+        await workout.populate('exercises.exercise exercises.exerciseId');
+        
+        // Calculate scores
+        const scores = await RankingSystem.calculateWorkoutScore(workout);
+        
+        // Update the workout
+        workout.hypertrophyScore = scores;
+        workout.markModified('hypertrophyScore');
+        
+        await workout.save();
+        updated++;
+      } catch (err) {
+        errors.push({ workoutId: workout._id, error: err.message });
+      }
+    }
+    
+    res.json({ 
+      message: `Updated ${updated} workouts`,
+      totalWorkouts: workouts.length,
+      errors: errors.length > 0 ? errors : undefined
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Get a single workout
 router.get('/:id', auth, async (req, res) => {
   try {
@@ -403,7 +525,7 @@ router.get('/:id', auth, async (req, res) => {
   }
 });
 
-// Update a workout
+// Update a workout - FIXED VERSION
 router.put('/:id', auth, async (req, res) => {
   try {
     const { exercises, duration, notes } = req.body;
@@ -446,6 +568,7 @@ router.put('/:id', auth, async (req, res) => {
     if (exercises) {
       workout.exercises = exercises.map(e => ({
         exercise: e.exerciseId,
+        exerciseId: e.exerciseId, // Ensure both fields are set
         sets: e.sets.map(set => ({
           reps: Math.min(100, Math.max(1, parseInt(set.reps) || 1)),
           weight: Math.max(0, parseFloat(set.weight) || 0),
@@ -460,9 +583,16 @@ router.put('/:id', auth, async (req, res) => {
     if (duration !== undefined) workout.duration = Math.max(1, parseInt(duration) || 1);
     if (notes !== undefined) workout.notes = notes;
     
+    // Save the workout first
+    await workout.save();
+    
+    // Populate exercises before recalculating score
+    await workout.populate('exercises.exercise exercises.exerciseId');
+    
     // Recalculate hypertrophy score
     const scores = await RankingSystem.calculateWorkoutScore(workout);
     workout.hypertrophyScore = scores;
+    workout.markModified('hypertrophyScore');
     
     await workout.save();
     
@@ -476,8 +606,6 @@ router.put('/:id', auth, async (req, res) => {
         lastWorkoutDate: workout.date
       });
     }
-    
-    await workout.populate('exercises.exercise');
     
     // Track new muscle groups after update
     const newMuscleGroups = new Set(['overall']);
