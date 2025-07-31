@@ -553,43 +553,49 @@ static async applyConsistencyMultiplier(baseScore, userId) {
         score: { $gt: userRanking.score }
       });
       
-      // User's rank is count + 1
-      const newRank = higherScoreCount + 1;
-      
-      // Get total count for percentile calculation
-      const totalCount = await Ranking.countDocuments({
-        period,
-        muscleGroup
-      });
-      
-      const percentile = newRank / totalCount;
-      const { tier, division } = this.getTierAndDivision(percentile);
-      
-      // Update the user's ranking
-      userRanking.rank = newRank;
-      userRanking.percentile = percentile;
-      userRanking.tier = tier;
-      userRanking.division = division;
-      await userRanking.save();
-      
-      // Update user document if it's overall ranking
-      if (muscleGroup === 'overall') {
-        await User.findByIdAndUpdate(userId, {
-          'rankings.overall': { tier, division, points: userRanking.score }
-        });
-      } else {
-        await User.findByIdAndUpdate(userId, {
-          [`rankings.muscleGroups.${muscleGroup}`]: { 
-            tier, 
-            division, 
-            points: userRanking.score 
-          }
-        });
-      }
-      
-      console.log(`Fast updated rank for user ${userId}: #${newRank} (${tier} ${division})`);
-      
-      return { rank: newRank, percentile, tier, division };
+    // User's rank is count + 1
+const newRank = higherScoreCount + 1;
+
+// Get total count for percentile calculation
+const totalCount = await Ranking.countDocuments({
+  period,
+  muscleGroup
+});
+
+const percentile = newRank / totalCount;
+const { tier, division } = this.getTierAndDivision(percentile);
+
+// Update the user's ranking
+userRanking.rank = newRank;
+userRanking.percentile = percentile;
+userRanking.tier = tier;
+userRanking.division = division;
+await userRanking.save();
+
+// Update user document if it's overall ranking
+if (muscleGroup === 'overall') {
+  await User.findByIdAndUpdate(userId, {
+    'rankings.overall': { 
+      tier, 
+      division, 
+      points: userRanking.score,
+      rank: newRank  // THIS IS THE ADDED LINE
+    }
+  });
+} else {
+  await User.findByIdAndUpdate(userId, {
+    [`rankings.muscleGroups.${muscleGroup}`]: { 
+      tier, 
+      division, 
+      points: userRanking.score,
+      rank: newRank  // THIS IS THE ADDED LINE
+    }
+  });
+}
+
+console.log(`Fast updated rank for user ${userId}: #${newRank} (${tier} ${division})`);
+
+return { rank: newRank, percentile, tier, division };
     } catch (error) {
       console.error('Error in fast rank update:', error);
       throw error;
