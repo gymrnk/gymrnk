@@ -221,6 +221,48 @@ router.get('/my-active', auth, async (req, res) => {
   }
 });
 
+// Get plan by ID
+router.get('/:id', auth, async (req, res) => {
+  try {
+    const plan = await WorkoutPlan.findById(req.params.id)
+      .populate('creator', 'username profile.displayName profile.avatar')
+      .populate({
+        path: 'days.template',
+        populate: {
+          path: 'exercises.exercise',
+          model: 'Exercise'
+        }
+      })
+      .populate('days.customWorkout.exercises.exercise');
+
+    if (!plan || !plan.isActive) {
+      return res.status(404).json({ error: 'Plan not found' });
+    }
+
+    // Check visibility
+    const isOwner = plan.creator._id.toString() === req.user._id.toString();
+    const isFriend = req.user.friends && req.user.friends.includes(plan.creator._id);
+    
+    if (plan.visibility === 'private' && !isOwner) {
+      return res.status(403).json({ error: 'This plan is private' });
+    }
+    
+    if (plan.visibility === 'friends' && !isOwner && !isFriend) {
+      return res.status(403).json({ error: 'This plan is only visible to friends' });
+    }
+
+    // Add isLiked field
+    const planObj = plan.toObject();
+    planObj.isLiked = plan.isLikedBy(req.user._id);
+    planObj.likeCount = plan.likes.length;
+
+    res.json(planObj);
+  } catch (error) {
+    console.error('Error fetching plan:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // Start a plan
 router.post('/:id/start', auth, async (req, res) => {
   try {
@@ -414,74 +456,102 @@ router.get('/:id/analytics', auth, async (req, res) => {
       return res.status(404).json({ error: 'Plan not found or unauthorized' });
     }
 
-    // Get all progress records
+    // Update analytics if they're stale or don't exist
+    const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+    if (!plan.analytics.lastUpdated || plan.analytics.lastUpdated < oneHourAgo) {
+      await plan.updateAnalytics();
+      // Reload the plan to get updated analytics
+      await plan.reload();
+    }
+
+    // Get all progress records for detailed data
     const allProgress = await UserPlanProgress.find({ 
       plan: plan._id 
-    }).populate('user', 'username profile.displayName');
+    }).populate('user', 'username profile.displayName profile.avatar');
 
     // Get ratings
     const ratings = await PlanRating.find({ 
       plan: plan._id 
-    }).populate('user', 'username profile.displayName');
-
-    // Calculate detailed analytics
-    const analytics = {
-      overview: {
-        totalStarts: allProgress.length,
-        totalCompletions: allProgress.filter(p => p.status === 'completed').length,
-        totalAbandoned: allProgress.filter(p => p.status === 'abandoned').length,
-        averageCompletionRate: plan.analytics.averageCompletionRate,
-        averageRating: plan.averageRating,
-        totalRatings: plan.totalRatings
-      },
-      dropOffAnalysis: {
-        byDay: {},
-        byDayOfWeek: plan.analytics.dropOffByDayOfWeek,
-        commonDropOffDay: plan.analytics.commonDropOffDay
-      },
-      userProgress: allProgress.map(p => ({
-        user: p.user,
-        status: p.status,
-        startDate: p.startDate,
-        currentDay: p.currentDay,
-        completionRate: p.completionRate,
-        lastWorkoutDate: p.lastWorkoutDate
-      })),
-      ratings: ratings.map(r => ({
-        user: r.user,
-        rating: r.rating,
-        review: r.review,
-        completionRate: r.completionRate,
-        wouldRecommend: r.wouldRecommend,
-        createdAt: r.createdAt
-      })),
-      dayByDayCompletion: {}
-    };
+    }).populate('user', 'username profile.displayName profile.avatar');
 
     // Calculate day-by-day completion rates
+    const dayByDayCompletion = {};
+    const totalStarts = plan.analytics.totalStarts || allProgress.length;
+    
     for (let day = 1; day <= plan.duration; day++) {
       const completedThisDay = allProgress.filter(p => 
-        p.completedWorkouts.some(w => w.dayNumber === day)
+        p.completedWorkouts && p.completedWorkouts.some(w => w.dayNumber === day)
       ).length;
       
-      analytics.dayByDayCompletion[day] = {
+      dayByDayCompletion[day] = {
         completed: completedThisDay,
-        completionRate: allProgress.length > 0 ? 
-          (completedThisDay / allProgress.length * 100).toFixed(1) : 0
+        completionRate: totalStarts > 0 
+          ? ((completedThisDay / totalStarts) * 100).toFixed(1) 
+          : '0'
       };
     }
 
-    // Calculate drop-off by specific day
+    // Calculate drop-off by specific day (for the byDay object)
+    const dropOffByDay = {};
     allProgress.filter(p => p.status === 'abandoned').forEach(p => {
-      const day = p.currentDay - 1; // Last completed day
-      analytics.dropOffAnalysis.byDay[day] = 
-        (analytics.dropOffAnalysis.byDay[day] || 0) + 1;
+      const day = p.currentDay > 0 ? p.currentDay - 1 : 0;
+      dropOffByDay[day] = (dropOffByDay[day] || 0) + 1;
     });
+
+    // Build analytics response
+    const analytics = {
+      overview: {
+        totalStarts: plan.analytics.totalStarts || 0,
+        totalCompletions: plan.completionCount || 0,
+        totalAbandoned: allProgress.filter(p => p.status === 'abandoned').length,
+        averageCompletionRate: plan.analytics.averageCompletionRate || 0,
+        averageRating: plan.averageRating || 0,
+        totalRatings: plan.totalRatings || 0,
+        commonDropOffDay: plan.analytics.commonDropOffDay || 0
+      },
+      dropOffAnalysis: {
+        byDay: dropOffByDay,
+        dropOffByDayOfWeek: plan.analytics.dropOffByDayOfWeek || {
+          monday: 0,
+          tuesday: 0,
+          wednesday: 0,
+          thursday: 0,
+          friday: 0,
+          saturday: 0,
+          sunday: 0
+        }
+      },
+      userProgress: allProgress.map(p => ({
+        user: {
+          _id: p.user._id,
+          username: p.user.username,
+          profile: p.user.profile
+        },
+        status: p.status,
+        startDate: p.startDate,
+        currentDay: p.currentDay,
+        completionRate: p.completionRate || 0,
+        lastWorkoutDate: p.lastWorkoutDate
+      })),
+      ratings: ratings.map(r => ({
+        user: {
+          _id: r.user._id,
+          username: r.user.username,
+          profile: r.user.profile
+        },
+        rating: r.rating,
+        review: r.review,
+        completionRate: r.completionRate || 0,
+        wouldRecommend: r.wouldRecommend,
+        createdAt: r.createdAt
+      })),
+      dayByDayCompletion
+    };
 
     res.json(analytics);
   } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: 'Server error' });
+    console.error('Analytics error:', error);
+    res.status(500).json({ error: 'Server error', details: error.message });
   }
 });
 
