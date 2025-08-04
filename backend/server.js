@@ -90,6 +90,8 @@ app.get('/health', (req, res) => {
   res.status(200).json(healthcheck);
 });
 
+app.use('/api/plans', require('./routes/workoutPlans'));
+
 // Root endpoint
 app.get('/', (req, res) => {
   res.json({ 

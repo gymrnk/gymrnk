@@ -21,6 +21,19 @@ const userSchema = new mongoose.Schema({
     required: true,
     minlength: 6
   },
+  activePlan: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'UserPlanProgress',
+    default: null
+  },
+  completedPlans: [{
+    plan: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'WorkoutPlan'
+    },
+    completedAt: Date,
+    completionRate: Number
+  }],
   profile: {
     displayName: String,
     bio: { type: String, maxlength: 500 },
