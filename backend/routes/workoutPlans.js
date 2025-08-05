@@ -197,10 +197,19 @@ router.get('/my-active', auth, async (req, res) => {
       status: 'active'
     }).populate({
       path: 'plan',
-      populate: {
-        path: 'creator days.template',
-        select: 'username profile.displayName name'
-      }
+      populate: [
+        {
+          path: 'creator',
+          select: 'username profile.displayName'
+        },
+        {
+          path: 'days.template',
+          populate: {
+            path: 'exercises.exercise',
+            model: 'Exercise'
+          }
+        }
+      ]
     });
 
     if (!activeProgress) {
@@ -262,6 +271,62 @@ router.get('/:id', auth, async (req, res) => {
     res.status(500).json({ error: 'Server error' });
   }
 });
+
+router.put('/:id', auth, [
+  body('name').optional().trim().notEmpty().isLength({ max: 100 }),
+  body('description').optional().isLength({ max: 1000 }),
+  body('visibility').optional().isIn(['global', 'friends', 'private']),
+  body('difficulty').optional().isIn(['beginner', 'intermediate', 'advanced'])
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    const plan = await WorkoutPlan.findOne({
+      _id: req.params.id,
+      creator: req.user._id
+    });
+
+    if (!plan) {
+      return res.status(404).json({ error: 'Plan not found or unauthorized' });
+    }
+
+    // Check if plan has active users
+    const activeUsers = await UserPlanProgress.countDocuments({
+      plan: plan._id,
+      status: 'active'
+    });
+
+    if (activeUsers > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot edit plan while users are actively using it',
+        activeUsers 
+      });
+    }
+
+    // Update allowed fields
+    const allowedUpdates = ['name', 'description', 'visibility', 'difficulty', 'tags', 'equipment', 'goals'];
+    const updates = Object.keys(req.body)
+      .filter(key => allowedUpdates.includes(key))
+      .reduce((obj, key) => {
+        obj[key] = req.body[key];
+        return obj;
+      }, {});
+
+    Object.assign(plan, updates);
+    await plan.save();
+
+    await plan.populate('creator days.template days.customWorkout.exercises.exercise');
+
+    res.json(plan);
+  } catch (error) {
+    console.error('Update plan error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 
 // Start a plan
 router.post('/:id/start', auth, async (req, res) => {
@@ -552,6 +617,49 @@ router.get('/:id/analytics', auth, async (req, res) => {
   } catch (error) {
     console.error('Analytics error:', error);
     res.status(500).json({ error: 'Server error', details: error.message });
+  }
+});
+
+router.delete('/:id', auth, async (req, res) => {
+  try {
+    const plan = await WorkoutPlan.findOne({
+      _id: req.params.id,
+      creator: req.user._id
+    });
+
+    if (!plan) {
+      return res.status(404).json({ error: 'Plan not found or unauthorized' });
+    }
+
+    // Check if plan has any users (active or completed)
+    const userProgress = await UserPlanProgress.countDocuments({
+      plan: plan._id
+    });
+
+    if (userProgress > 0) {
+      // Soft delete - mark as inactive instead of deleting
+      plan.isActive = false;
+      await plan.save();
+      
+      res.json({ 
+        message: 'Plan archived (not deleted) because it has been used by users',
+        archived: true 
+      });
+    } else {
+      // Hard delete - completely remove the plan
+      await WorkoutPlan.deleteOne({ _id: plan._id });
+      
+      // Also delete any ratings for this plan
+      await PlanRating.deleteMany({ plan: plan._id });
+      
+      res.json({ 
+        message: 'Plan deleted successfully',
+        deleted: true 
+      });
+    }
+  } catch (error) {
+    console.error('Delete plan error:', error);
+    res.status(500).json({ error: 'Server error' });
   }
 });
 
