@@ -80,6 +80,39 @@ router.post('/', auth, [
     
     // IMPORTANT: Save the workout first to get an ID
     await workout.save();
+
+    if (req.body.planProgressId && req.body.planDayNumber) {
+      try {
+        const UserPlanProgress = require('../models/UserPlanProgress');
+        
+        console.log('=== PLAN INTEGRATION ===');
+        console.log('Workout created with plan data:', {
+          workoutId: workout._id,
+          planProgressId: req.body.planProgressId,
+          planDayNumber: req.body.planDayNumber
+        });
+        
+        const progress = await UserPlanProgress.findOne({
+          _id: req.body.planProgressId,
+          user: req.user._id,
+          status: 'active'
+        }).populate('plan');
+
+        if (progress) {
+          console.log('Found active plan progress, completing day...');
+          
+          // Use the completeDay method from the model
+          await progress.completeDay(workout._id, req.body.planDayNumber);
+          
+          console.log('Plan day marked as complete successfully');
+        } else {
+          console.warn('No active plan progress found for ID:', req.body.planProgressId);
+        }
+      } catch (planError) {
+        console.error('Failed to update plan progress:', planError);
+        // Don't fail the workout creation if plan update fails
+      }
+    }
     
     // CRITICAL: Populate exercises BEFORE calculating scores
     await workout.populate('exercises.exercise exercises.exerciseId');

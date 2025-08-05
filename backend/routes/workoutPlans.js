@@ -210,7 +210,8 @@ router.get('/my-active', auth, async (req, res) => {
           }
         }
       ]
-    });
+    })
+    .populate('completedWorkouts.workoutId'); // Make sure to populate the completed workouts
 
     if (!activeProgress) {
       return res.json({ activeProgress: null });
@@ -219,13 +220,22 @@ router.get('/my-active', auth, async (req, res) => {
     // Check for missed days
     const missedInfo = activeProgress.checkMissedDays();
 
+    // Debug log to see what we're sending
+    console.log('Active Progress Debug:', {
+      progressId: activeProgress._id,
+      currentDay: activeProgress.currentDay,
+      completedDays: activeProgress.completedDays,
+      completedWorkoutsCount: activeProgress.completedWorkouts?.length || 0,
+      completedWorkouts: activeProgress.completedWorkouts
+    });
+
     res.json({
       activeProgress,
       missedInfo,
       nextWorkout: activeProgress.plan.days.find(d => d.dayNumber === activeProgress.currentDay)
     });
   } catch (error) {
-    console.error(error);
+    console.error('Error in /my-active:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });
