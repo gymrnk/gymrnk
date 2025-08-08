@@ -522,21 +522,71 @@ router.post('/:id/rate', auth, [
 // Get plan analytics (for creators)
 router.get('/:id/analytics', auth, async (req, res) => {
   try {
-    const plan = await WorkoutPlan.findOne({
-      _id: req.params.id,
-      creator: req.user._id
-    });
+    // First, find the plan without creator restriction
+    const plan = await WorkoutPlan.findById(req.params.id);
 
-    if (!plan) {
-      return res.status(404).json({ error: 'Plan not found or unauthorized' });
+    if (!plan || !plan.isActive) {
+      return res.status(404).json({ error: 'Plan not found' });
     }
 
-    // Update analytics if they're stale or don't exist
-    const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
-    if (!plan.analytics.lastUpdated || plan.analytics.lastUpdated < oneHourAgo) {
-      await plan.updateAnalytics();
-      // Reload the plan to get updated analytics
-      await plan.reload();
+    // Check permissions
+    const isCreator = plan.creator.toString() === req.user._id.toString();
+    
+    // Check if user has started this plan
+    const hasStartedPlan = await UserPlanProgress.exists({
+      user: req.user._id,
+      plan: plan._id
+    });
+
+    // Determine access level
+    let accessLevel = 'none';
+    if (isCreator) {
+      accessLevel = 'full'; // Creator gets everything
+    } else if (hasStartedPlan) {
+      accessLevel = 'participant'; // Users who started the plan get most data
+    } else if (plan.visibility === 'global') {
+      accessLevel = 'basic'; // Public plans show basic stats only
+    } else if (plan.visibility === 'friends' && req.user.friends?.includes(plan.creator)) {
+      accessLevel = 'basic'; // Friends get basic stats
+    }
+
+    if (accessLevel === 'none') {
+      return res.status(403).json({ 
+        error: 'You do not have permission to view analytics for this plan',
+        hint: 'Start this plan to view detailed analytics'
+      });
+    }
+
+    // Update analytics if they're stale or don't exist (only for creator)
+    if (isCreator) {
+      const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+      if (!plan.analytics?.lastUpdated || plan.analytics.lastUpdated < oneHourAgo) {
+        try {
+          await plan.updateAnalytics();
+          // Reload the plan to get updated analytics
+          await plan.reload();
+        } catch (updateError) {
+          console.error('Failed to update analytics:', updateError);
+          // Continue with existing analytics
+        }
+      }
+    }
+
+    // For basic access, return limited data
+    if (accessLevel === 'basic') {
+      return res.json({
+        overview: {
+          totalStarts: plan.analytics?.totalStarts || 0,
+          totalCompletions: plan.completionCount || 0,
+          averageCompletionRate: plan.analytics?.averageCompletionRate || 0,
+          averageRating: plan.averageRating || 0,
+          totalRatings: plan.totalRatings || 0,
+        },
+        dropOffAnalysis: {},
+        userProgress: [], // Don't show other users' progress
+        ratings: [], // Don't show individual ratings
+        dayByDayCompletion: {}
+      });
     }
 
     // Get all progress records for detailed data
@@ -551,7 +601,7 @@ router.get('/:id/analytics', auth, async (req, res) => {
 
     // Calculate day-by-day completion rates
     const dayByDayCompletion = {};
-    const totalStarts = plan.analytics.totalStarts || allProgress.length;
+    const totalStarts = plan.analytics?.totalStarts || allProgress.length;
     
     for (let day = 1; day <= plan.duration; day++) {
       const completedThisDay = allProgress.filter(p => 
@@ -576,17 +626,17 @@ router.get('/:id/analytics', auth, async (req, res) => {
     // Build analytics response
     const analytics = {
       overview: {
-        totalStarts: plan.analytics.totalStarts || 0,
+        totalStarts: plan.analytics?.totalStarts || 0,
         totalCompletions: plan.completionCount || 0,
         totalAbandoned: allProgress.filter(p => p.status === 'abandoned').length,
-        averageCompletionRate: plan.analytics.averageCompletionRate || 0,
+        averageCompletionRate: plan.analytics?.averageCompletionRate || 0,
         averageRating: plan.averageRating || 0,
         totalRatings: plan.totalRatings || 0,
-        commonDropOffDay: plan.analytics.commonDropOffDay || 0
+        commonDropOffDay: plan.analytics?.commonDropOffDay || 0
       },
       dropOffAnalysis: {
         byDay: dropOffByDay,
-        dropOffByDayOfWeek: plan.analytics.dropOffByDayOfWeek || {
+        dropOffByDayOfWeek: plan.analytics?.dropOffByDayOfWeek || {
           monday: 0,
           tuesday: 0,
           wednesday: 0,
@@ -596,18 +646,31 @@ router.get('/:id/analytics', auth, async (req, res) => {
           sunday: 0
         }
       },
-      userProgress: allProgress.map(p => ({
-        user: {
-          _id: p.user._id,
-          username: p.user.username,
-          profile: p.user.profile
-        },
-        status: p.status,
-        startDate: p.startDate,
-        currentDay: p.currentDay,
-        completionRate: p.completionRate || 0,
-        lastWorkoutDate: p.lastWorkoutDate
-      })),
+      userProgress: accessLevel === 'participant' 
+        ? allProgress.filter(p => p.user._id.toString() === req.user._id.toString()).map(p => ({
+            user: {
+              _id: p.user._id,
+              username: p.user.username,
+              profile: p.user.profile
+            },
+            status: p.status,
+            startDate: p.startDate,
+            currentDay: p.currentDay,
+            completionRate: p.completionRate || 0,
+            lastWorkoutDate: p.lastWorkoutDate
+          }))
+        : allProgress.map(p => ({
+            user: {
+              _id: p.user._id,
+              username: p.user.username,
+              profile: p.user.profile
+            },
+            status: p.status,
+            startDate: p.startDate,
+            currentDay: p.currentDay,
+            completionRate: p.completionRate || 0,
+            lastWorkoutDate: p.lastWorkoutDate
+          })),
       ratings: ratings.map(r => ({
         user: {
           _id: r.user._id,
