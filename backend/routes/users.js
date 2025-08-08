@@ -17,6 +17,7 @@ router.get('/me', auth, async (req, res) => {
         select: '_id username email profile',
         match: { isActive: true } // Only get active friends
       })
+      .populate('crew') // ADD THIS LINE to populate crew data
       .lean(); // Use lean for better performance
     
     if (!user) {
@@ -381,7 +382,8 @@ router.get('/:id', auth, async (req, res) => {
     
     const user = await User.findById(userId)
       .select('-password -email')
-      .populate('friends', 'username profile.displayName profile.avatar');
+      .populate('friends', 'username profile.displayName profile.avatar')
+      .populate('crew'); // ADD THIS LINE to populate crew data
     
     if (!user || !user.isActive) {
       return res.status(404).json({ error: 'User not found' });

@@ -706,4 +706,80 @@ router.post('/:id/like', auth, async (req, res) => {
   }
 });
 
+router.post('/progress/:progressId/complete-rest-day', auth, async (req, res) => {
+  try {
+    const { dayNumber } = req.body;
+
+    console.log('=== COMPLETE REST DAY ===');
+    console.log('Progress ID:', req.params.progressId);
+    console.log('Day Number:', dayNumber);
+
+    const progress = await UserPlanProgress.findOne({
+      _id: req.params.progressId,
+      user: req.user._id
+    }).populate('plan');
+
+    if (!progress) {
+      return res.status(404).json({ error: 'Progress not found' });
+    }
+
+    if (progress.status !== 'active') {
+      return res.status(400).json({ error: 'Plan is not active' });
+    }
+
+    // Verify the day exists and is a rest day
+    const planDay = progress.plan.days.find(d => d.dayNumber === dayNumber);
+    if (!planDay) {
+      return res.status(400).json({ error: 'Invalid day number' });
+    }
+
+    if (planDay.dayType !== 'rest') {
+      return res.status(400).json({ error: 'This is not a rest day' });
+    }
+
+    // Check if already completed
+    const alreadyCompleted = progress.completedWorkouts.some(
+      w => w.dayNumber === dayNumber
+    );
+    
+    if (alreadyCompleted) {
+      return res.status(400).json({ error: 'Day already completed' });
+    }
+
+    // Complete the rest day (no workout ID needed)
+    progress.completedWorkouts.push({
+      dayNumber,
+      workoutId: null, // No workout for rest days
+      completedAt: new Date()
+    });
+    
+    progress.completedDays++;
+    progress.currentDay = dayNumber + 1;
+    progress.lastWorkoutDate = new Date();
+    progress.completionRate = (progress.completedDays / progress.plan.duration) * 100;
+    
+    // Check if plan is completed
+    if (progress.currentDay > progress.plan.duration) {
+      progress.status = 'completed';
+      progress.actualEndDate = new Date();
+      
+      // Update plan stats
+      await WorkoutPlan.findByIdAndUpdate(progress.plan._id, {
+        $inc: { completionCount: 1 }
+      });
+    }
+    
+    await progress.save();
+
+    res.json({
+      message: 'Rest day completed successfully',
+      progress,
+      isCompleted: progress.status === 'completed'
+    });
+  } catch (error) {
+    console.error('Error completing rest day:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 module.exports = router;
