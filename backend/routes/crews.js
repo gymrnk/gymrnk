@@ -430,13 +430,17 @@ router.get('/:crewId/analytics/muscle-groups', auth, async (req, res) => {
   }
 });
 
-// Get member engagement analytics
-// Get member engagement analytics (ENHANCED VERSION)
+// Get member engagement analytics (FIXED VERSION WITH STREAK FROM DB)
 router.get('/:crewId/analytics/member-engagement', auth, async (req, res) => {
   try {
     const { startDate, endDate } = req.query;
+    
+    // Populate members with streak data from User model
     const crew = await Crew.findById(req.params.crewId)
-      .populate('members', 'username profile.displayName profile.avatar rankings.overall');
+      .populate({
+        path: 'members',
+        select: 'username profile.displayName profile.avatar rankings.overall streak.current.count'
+      });
     
     if (!crew || !crew.isActive) {
       return res.status(404).json({ error: 'Crew not found' });
@@ -462,7 +466,7 @@ router.get('/:crewId/analytics/member-engagement', auth, async (req, res) => {
     
     const workouts = await Workout.find(workoutFilter)
       .select('user date duration hypertrophyScore')
-      .sort({ date: 1 }); // Sort by date for streak calculation
+      .sort({ date: 1 });
     
     // Build member engagement data
     const memberEngagement = crew.members.map(member => {
@@ -498,48 +502,8 @@ router.get('/:crewId/analytics/member-engagement', auth, async (req, res) => {
         mostFrequentHour = maxCount > 0 ? hourCounts.indexOf(maxCount) : null;
       }
       
-      // Calculate current streak
-      let currentStreak = 0;
-      if (memberWorkouts.length > 0) {
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
-        
-        // Sort workouts by date (newest first)
-        const sortedWorkouts = memberWorkouts
-          .sort((a, b) => new Date(b.date) - new Date(a.date));
-        
-        // Check if the last workout was today or yesterday
-        const lastWorkoutDate = new Date(sortedWorkouts[0].date);
-        lastWorkoutDate.setHours(0, 0, 0, 0);
-        
-        const daysSinceLastWorkout = Math.floor(
-          (today - lastWorkoutDate) / (1000 * 60 * 60 * 24)
-        );
-        
-        // Only count streak if last workout was within the last 2 days
-        if (daysSinceLastWorkout <= 1) {
-          currentStreak = 1;
-          let previousDate = lastWorkoutDate;
-          
-          // Check previous workouts for consecutive days
-          for (let i = 1; i < sortedWorkouts.length; i++) {
-            const workoutDate = new Date(sortedWorkouts[i].date);
-            workoutDate.setHours(0, 0, 0, 0);
-            
-            const daysBetween = Math.floor(
-              (previousDate - workoutDate) / (1000 * 60 * 60 * 24)
-            );
-            
-            // Allow 1 rest day between workouts for streak
-            if (daysBetween <= 2) {
-              currentStreak++;
-              previousDate = workoutDate;
-            } else {
-              break; // Streak broken
-            }
-          }
-        }
-      }
+      // Get current streak from User model (from database)
+      const currentStreak = member.streak?.current?.count || 0;
       
       return {
         member: {
@@ -560,8 +524,8 @@ router.get('/:crewId/analytics/member-engagement', auth, async (req, res) => {
           lastWorkout: memberWorkouts.length > 0
             ? memberWorkouts.sort((a, b) => b.date - a.date)[0].date
             : null,
-          mostFrequentHour, // NEW: Hour they most frequently work out (0-23)
-          currentStreak // NEW: Current workout streak in days
+          mostFrequentHour, // Hour they most frequently work out (0-23)
+          currentStreak // Current workout streak from database
         }
       };
     });
@@ -571,7 +535,7 @@ router.get('/:crewId/analytics/member-engagement', auth, async (req, res) => {
     
     res.json({ members: memberEngagement });
   } catch (error) {
-    console.error(error);
+    console.error('Member engagement error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });
