@@ -253,8 +253,8 @@ router.get('/me', auth, async (req, res) => {
   try {
     const user = await User.findById(req.user._id)
       .select('-password')
-      .populate('friends', 'username profile.displayName profile.avatar rankings');
-      .populate('crew'); // ADD THIS LINE to populate crew data
+      .populate('friends', 'username profile.displayName profile.avatar rankings')
+      .populate('crew'); // Properly chained populate for crew
     
     res.json(user);
   } catch (error) {
