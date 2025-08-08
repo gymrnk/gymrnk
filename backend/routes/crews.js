@@ -540,6 +540,259 @@ router.get('/:crewId/analytics/member-engagement', auth, async (req, res) => {
   }
 });
 
+// Get member demographics and peak times analysis
+router.get('/:crewId/analytics/demographics-peak-times', auth, async (req, res) => {
+  try {
+    const { startDate, endDate } = req.query;
+    const crew = await Crew.findById(req.params.crewId)
+      .populate({
+        path: 'members',
+        select: 'username profile.displayName profile.age profile.gender profile.experienceLevel profile.fitnessGoals profile.height profile.weight streak.current.count'
+      });
+    
+    if (!crew || !crew.isActive) {
+      return res.status(404).json({ error: 'Crew not found' });
+    }
+    
+    // Check permissions
+    if (!crew.isAdmin(req.user._id) && !crew.isMember(req.user._id)) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+    
+    // Date filter
+    const dateFilter = {};
+    if (startDate) dateFilter.$gte = new Date(startDate);
+    if (endDate) dateFilter.$lte = new Date(endDate);
+    
+    const memberIds = crew.members.map(m => m._id);
+    const workoutFilter = {
+      user: { $in: memberIds }
+    };
+    if (Object.keys(dateFilter).length > 0) {
+      workoutFilter.date = dateFilter;
+    }
+    
+    const workouts = await Workout.find(workoutFilter)
+      .select('user date duration')
+      .populate('user', 'profile.age profile.gender profile.experienceLevel');
+    
+    // DEMOGRAPHICS ANALYSIS
+    const demographics = {
+      ageGroups: {
+        'under18': 0,
+        '18-24': 0,
+        '25-34': 0,
+        '35-44': 0,
+        '45-54': 0,
+        '55+': 0,
+        'unknown': 0
+      },
+      gender: {
+        'male': 0,
+        'female': 0,
+        'other': 0,
+        'unknown': 0
+      },
+      experienceLevel: {
+        'beginner': 0,
+        'intermediate': 0,
+        'advanced': 0,
+        'unknown': 0
+      },
+      fitnessGoals: {},
+      averageStats: {
+        age: 0,
+        height: 0,
+        weight: 0,
+        streak: 0
+      }
+    };
+    
+    // Process member demographics
+    let totalAge = 0, ageCount = 0;
+    let totalHeight = 0, heightCount = 0;
+    let totalWeight = 0, weightCount = 0;
+    let totalStreak = 0;
+    
+    crew.members.forEach(member => {
+      // Age groups
+      if (member.profile?.age) {
+        const age = member.profile.age;
+        totalAge += age;
+        ageCount++;
+        
+        if (age < 18) demographics.ageGroups['under18']++;
+        else if (age <= 24) demographics.ageGroups['18-24']++;
+        else if (age <= 34) demographics.ageGroups['25-34']++;
+        else if (age <= 44) demographics.ageGroups['35-44']++;
+        else if (age <= 54) demographics.ageGroups['45-54']++;
+        else demographics.ageGroups['55+']++;
+      } else {
+        demographics.ageGroups['unknown']++;
+      }
+      
+      // Gender
+      const gender = member.profile?.gender?.toLowerCase() || 'unknown';
+      if (demographics.gender[gender] !== undefined) {
+        demographics.gender[gender]++;
+      } else {
+        demographics.gender['other']++;
+      }
+      
+      // Experience level
+      const exp = member.profile?.experienceLevel?.toLowerCase() || 'unknown';
+      if (demographics.experienceLevel[exp] !== undefined) {
+        demographics.experienceLevel[exp]++;
+      } else {
+        demographics.experienceLevel['unknown']++;
+      }
+      
+      // Fitness goals
+      if (member.profile?.fitnessGoals) {
+        member.profile.fitnessGoals.forEach(goal => {
+          demographics.fitnessGoals[goal] = (demographics.fitnessGoals[goal] || 0) + 1;
+        });
+      }
+      
+      // Stats
+      if (member.profile?.height) {
+        totalHeight += member.profile.height;
+        heightCount++;
+      }
+      if (member.profile?.weight) {
+        totalWeight += member.profile.weight;
+        weightCount++;
+      }
+      totalStreak += member.streak?.current?.count || 0;
+    });
+    
+    // Calculate averages
+    demographics.averageStats = {
+      age: ageCount > 0 ? Math.round(totalAge / ageCount) : 0,
+      height: heightCount > 0 ? Math.round(totalHeight / heightCount) : 0,
+      weight: weightCount > 0 ? Math.round(totalWeight / weightCount) : 0,
+      streak: Math.round(totalStreak / crew.members.length)
+    };
+    
+    // PEAK TIMES ANALYSIS
+    // Create detailed hourly breakdown for each day
+    const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    const peakTimesData = {};
+    
+    // Initialize data structure
+    dayNames.forEach(day => {
+      peakTimesData[day] = {
+        hourly: Array(24).fill(0),
+        total: 0,
+        peak: { hour: null, count: 0 },
+        offPeak: { hour: null, count: 999 }
+      };
+    });
+    
+    // Process workouts
+    workouts.forEach(workout => {
+      const date = new Date(workout.date);
+      const dayName = dayNames[date.getDay()];
+      const hour = date.getHours();
+      
+      peakTimesData[dayName].hourly[hour]++;
+      peakTimesData[dayName].total++;
+    });
+    
+    // Calculate peak and off-peak for each day
+    dayNames.forEach(day => {
+      const dayData = peakTimesData[day];
+      
+      dayData.hourly.forEach((count, hour) => {
+        // Find peak hour
+        if (count > dayData.peak.count) {
+          dayData.peak = { hour, count };
+        }
+        // Find off-peak hour (non-zero)
+        if (count > 0 && count < dayData.offPeak.count) {
+          dayData.offPeak = { hour, count };
+        }
+      });
+      
+      // Calculate traffic levels (cold, warm, hot)
+      const maxCount = Math.max(...dayData.hourly);
+      dayData.trafficLevels = dayData.hourly.map(count => {
+        if (count === 0) return 'empty';
+        const percentage = (count / maxCount) * 100;
+        if (percentage <= 33) return 'cold';
+        if (percentage <= 66) return 'warm';
+        return 'hot';
+      });
+      
+      // Add time labels for better readability
+      dayData.hourlyWithLabels = dayData.hourly.map((count, hour) => ({
+        hour,
+        time: hour === 0 ? '12 AM' : hour < 12 ? `${hour} AM` : hour === 12 ? '12 PM' : `${hour - 12} PM`,
+        count,
+        level: dayData.trafficLevels[hour]
+      }));
+    });
+    
+    // Calculate overall gym patterns
+    const overallPatterns = {
+      busiestDay: null,
+      quietestDay: null,
+      busiestHour: null,
+      quietestHour: null,
+      averageWorkoutsPerDay: 0
+    };
+    
+    let maxDayTotal = 0, minDayTotal = 999999;
+    let totalWorkouts = 0;
+    
+    dayNames.forEach(day => {
+      const dayTotal = peakTimesData[day].total;
+      totalWorkouts += dayTotal;
+      
+      if (dayTotal > maxDayTotal) {
+        maxDayTotal = dayTotal;
+        overallPatterns.busiestDay = { day, count: dayTotal };
+      }
+      if (dayTotal < minDayTotal && dayTotal > 0) {
+        minDayTotal = dayTotal;
+        overallPatterns.quietestDay = { day, count: dayTotal };
+      }
+    });
+    
+    overallPatterns.averageWorkoutsPerDay = Math.round(totalWorkouts / 7);
+    
+    // Find overall busiest and quietest hours across all days
+    let globalMaxHour = { day: null, hour: null, count: 0 };
+    let globalMinHour = { day: null, hour: null, count: 999999 };
+    
+    dayNames.forEach(day => {
+      peakTimesData[day].hourly.forEach((count, hour) => {
+        if (count > globalMaxHour.count) {
+          globalMaxHour = { day, hour, count };
+        }
+        if (count > 0 && count < globalMinHour.count) {
+          globalMinHour = { day, hour, count };
+        }
+      });
+    });
+    
+    overallPatterns.busiestHour = globalMaxHour;
+    overallPatterns.quietestHour = globalMinHour;
+    
+    res.json({
+      demographics,
+      peakTimes: peakTimesData,
+      overallPatterns,
+      totalMembers: crew.members.length,
+      dateRange: { start: startDate, end: endDate }
+    });
+    
+  } catch (error) {
+    console.error('Demographics and peak times error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // Get detailed activity for a specific day
 router.get('/:crewId/analytics/day-details', auth, async (req, res) => {
   try {
