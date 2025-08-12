@@ -169,6 +169,139 @@ router.post('/', auth, [
     
     // Update weekly snapshot
     await WeeklySnapshotService.updateSnapshotForWorkout(workout);
+
+    try {
+      // Check if user has a crew
+      const user = await User.findById(req.user._id).populate('crew');
+      
+      if (user.crew && user.crew._id) {
+        // Prepare workout data for challenge progress update
+        const workoutDataForChallenges = {
+          workoutId: workout._id,
+          date: workout.date,
+          totalVolume: 0,
+          muscleGroups: [],
+          exerciseCount: workout.exercises.length,
+          duration: workout.duration,
+        };
+        
+        // Extract muscle groups worked and calculate total volume
+        const muscleGroupsSet = new Set();
+        workout.exercises.forEach(ex => {
+          if (ex.exercise && ex.exercise.muscleGroup) {
+            muscleGroupsSet.add(ex.exercise.muscleGroup.toLowerCase());
+            
+            // Calculate volume per exercise
+            let exerciseVolume = 0;
+            ex.sets.forEach(set => {
+              exerciseVolume += (set.reps * set.weight);
+            });
+            workoutDataForChallenges.totalVolume += exerciseVolume;
+          }
+        });
+        
+        workoutDataForChallenges.muscleGroups = Array.from(muscleGroupsSet);
+        
+        // Send update to crew challenges
+        const Crew = require('../models/Crew');
+        const crew = await Crew.findById(user.crew._id);
+        
+        if (crew) {
+          // Get active challenges the user is participating in
+          const activeChallenges = crew.challenges.filter(c => 
+            c.isActive && 
+            new Date(c.endDate) > new Date() &&
+            new Date(c.startDate) <= new Date() &&
+            c.participants.some(p => p.user.toString() === req.user._id.toString())
+          );
+          
+          const challengeUpdates = [];
+          let challengesUpdated = false;
+          
+          for (const challenge of activeChallenges) {
+            const participant = challenge.participants.find(p => 
+              p.user.toString() === req.user._id.toString()
+            );
+            
+            if (!participant) continue;
+            
+            let progressIncrement = 0;
+            
+            switch(challenge.type) {
+              case 'total_workouts':
+                progressIncrement = 1;
+                console.log(`Total workouts challenge: +1 progress for user ${req.user._id}`);
+                break;
+                
+              case 'muscle_focus':
+                // Check if workout includes the target muscle group
+                const targetMuscle = challenge.metadata?.muscleGroup;
+                if (targetMuscle && workoutDataForChallenges.muscleGroups.includes(targetMuscle)) {
+                  progressIncrement = 1;
+                  console.log(`Muscle focus challenge: +1 progress for ${targetMuscle} workout`);
+                }
+                break;
+                
+              case 'volume':
+                // Add the total volume from the workout
+                progressIncrement = workoutDataForChallenges.totalVolume || 0;
+                console.log(`Volume challenge: +${progressIncrement} progress`);
+                break;
+                
+              case 'custom':
+                // Custom challenges need specific handling based on metadata
+                progressIncrement = 0;
+                break;
+            }
+            
+            if (progressIncrement > 0) {
+              participant.progress += progressIncrement;
+              challengesUpdated = true;
+              
+              // Check if challenge is completed
+              if (participant.progress >= challenge.target && !participant.completedAt) {
+                participant.completedAt = new Date();
+                
+                // Award XP to crew
+                crew.xp = (crew.xp || 0) + challenge.rewards.xp;
+                
+                // Check crew level up
+                const xpForNextLevel = crew.level * 100;
+                if (crew.xp >= xpForNextLevel) {
+                  crew.level++;
+                  crew.xp -= xpForNextLevel;
+                }
+                
+                challengeUpdates.push({
+                  challengeName: challenge.name,
+                  completed: true,
+                  xpAwarded: challenge.rewards.xp,
+                });
+                
+                console.log(`🎉 User ${req.user._id} completed challenge: ${challenge.name}`);
+              } else {
+                challengeUpdates.push({
+                  challengeName: challenge.name,
+                  progress: participant.progress,
+                  target: challenge.target,
+                  percentComplete: Math.round((participant.progress / challenge.target) * 100)
+                });
+                
+                console.log(`📈 Challenge progress: ${challenge.name} - ${participant.progress}/${challenge.target}`);
+              }
+            }
+          }
+          
+          if (challengesUpdated) {
+            await crew.save();
+            console.log('✅ Challenge progress updated for crew:', crew.name);
+          }
+        }
+      }
+    } catch (challengeError) {
+      console.error('❌ Failed to update challenge progress:', challengeError);
+      // Don't fail the workout creation if challenge update fails
+    }
     
     // NEW: Get consistency multiplier for response
     const consistencyMultiplier = await WorkoutValidationService.getConsistencyMultiplier(req.user._id);
@@ -804,7 +937,7 @@ router.put('/:id', auth, async (req, res) => {
       console.error('Failed to update challenge progress:', challengeError);
       // Don't fail the workout creation if challenge update fails
     }
-    
+
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: 'Server error' });
