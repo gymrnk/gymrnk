@@ -13,11 +13,15 @@ const { Server } = require('socket.io');
 const socketAuth = require('./middleware/socketAuth');
 const messageHandlers = require('./socket/messageHandlers');
 
+// Import auth middleware
+const auth = require('./middleware/auth');
+
 // Import services
 const WeeklySnapshotService = require('./services/weeklySnapshotService');
 const RankingSystem = require('./services/rankingSystem');
 const SmartRankingUpdater = require('./services/smartRankingUpdater');
 const continuousExpirationService = require('./services/continuousExpirationService');
+const consistencyChallengeService = require('./services/consistencyChallengeService');
 
 // Import routes
 const authRoutes = require('./routes/auth');
@@ -124,6 +128,29 @@ app.use('/api/workouts', workoutRoutes);
 app.use('/api/messages', messageRoutes);
 app.use('/api/templates', templateRoutes);
 app.use('/api/crews', crewRoutes);
+
+// Admin endpoints - moved before 404 handler
+app.post('/api/admin/trigger-consistency-update', auth, async (req, res) => {
+  try {
+    // Check if user is admin (you might want to add a global admin check)
+    await consistencyChallengeService.manualUpdate();
+    res.json({ message: 'Consistency update triggered successfully' });
+  } catch (error) {
+    console.error('Error triggering consistency update:', error);
+    res.status(500).json({ error: 'Failed to trigger update' });
+  }
+});
+
+// Get challenge stats endpoint
+app.get('/api/admin/crew/:crewId/challenge-stats', auth, async (req, res) => {
+  try {
+    const stats = await consistencyChallengeService.getChallengeStats(req.params.crewId);
+    res.json(stats);
+  } catch (error) {
+    console.error('Error getting challenge stats:', error);
+    res.status(500).json({ error: 'Failed to get challenge stats' });
+  }
+});
 
 // 404 handler
 app.use((req, res) => {
@@ -445,6 +472,17 @@ function setupCronJobs() {
       await RankingSystem.updateAllRankingsParallel('weekly', 4);
     } catch (error) {
       console.error('Error refreshing weekly rankings:', error);
+    }
+  });
+
+  // Consistency challenge update - runs daily at midnight
+  cron.schedule('0 0 * * *', async () => {
+    console.log('Running consistency challenge update...');
+    try {
+      await consistencyChallengeService.updateConsistencyChallenges();
+      console.log('Consistency challenge update completed');
+    } catch (error) {
+      console.error('Error in consistency challenge update:', error);
     }
   });
 

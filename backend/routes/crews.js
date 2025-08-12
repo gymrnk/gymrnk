@@ -1121,4 +1121,421 @@ router.delete('/:crewId', auth, async (req, res) => {
   }
 });
 
+// Get all challenges for a crew
+router.get('/:crewId/challenges', auth, async (req, res) => {
+  try {
+    const { status = 'active' } = req.query;
+    const crew = await Crew.findById(req.params.crewId)
+      .populate('challenges.createdBy', 'username profile.displayName profile.avatar')
+      .populate('challenges.participants.user', 'username profile.displayName profile.avatar');
+    
+    if (!crew || !crew.isActive) {
+      return res.status(404).json({ error: 'Crew not found' });
+    }
+    
+    // Check if user is member
+    if (!crew.isMember(req.user._id)) {
+      return res.status(403).json({ error: 'Only crew members can view challenges' });
+    }
+    
+    // Filter challenges by status
+    let challenges = crew.challenges || [];
+    if (status === 'active') {
+      challenges = challenges.filter(c => c.isActive && new Date(c.endDate) > new Date());
+    } else if (status === 'completed') {
+      challenges = challenges.filter(c => !c.isActive || new Date(c.endDate) <= new Date());
+    }
+    
+    res.json({ challenges });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Create a new challenge (admin only)
+router.post('/:crewId/challenges', auth, async (req, res) => {
+  try {
+    const {
+      name,
+      description,
+      type,
+      target,
+      startDate,
+      endDate,
+      muscleGroup, // For muscle_focus type
+      customMetric, // For custom type
+    } = req.body;
+    
+    const crew = await Crew.findById(req.params.crewId);
+    
+    if (!crew || !crew.isActive) {
+      return res.status(404).json({ error: 'Crew not found' });
+    }
+    
+    // Check if user is admin
+    if (!crew.isAdmin(req.user._id)) {
+      return res.status(403).json({ error: 'Only admins can create challenges' });
+    }
+    
+    // Validate required fields
+    if (!name || !type || !target) {
+      return res.status(400).json({ error: 'Name, type, and target are required' });
+    }
+    
+    // Validate dates
+    const start = new Date(startDate || Date.now());
+    const end = new Date(endDate);
+    
+    if (start >= end) {
+      return res.status(400).json({ error: 'End date must be after start date' });
+    }
+    
+    // Create challenge object matching your model schema
+    const challenge = {
+      name,
+      description: description || '',
+      type,
+      target: parseInt(target),
+      startDate: start,
+      endDate: end,
+      progress: 0,
+      participants: [],
+      rewards: {
+        xp: calculateXPReward(type, target),
+        badge: generateBadge(type, target),
+      },
+      isActive: true,
+      createdBy: req.user._id,
+      createdAt: new Date()
+    };
+    
+    // Add challenge using model method
+    await crew.addChallenge(challenge, req.user._id);
+    
+    // Get the created challenge with populated data
+    await crew.populate('challenges.createdBy', 'username profile.displayName profile.avatar');
+    const createdChallenge = crew.challenges[crew.challenges.length - 1];
+    
+    res.status(201).json({ challenge: createdChallenge });
+  } catch (error) {
+    console.error('Error creating challenge:', error);
+    res.status(500).json({ error: error.message || 'Server error' });
+  }
+});
+
+// Join a challenge
+router.post('/:crewId/challenges/:challengeId/join', auth, async (req, res) => {
+  try {
+    const crew = await Crew.findById(req.params.crewId);
+    
+    if (!crew || !crew.isActive) {
+      return res.status(404).json({ error: 'Crew not found' });
+    }
+    
+    // Check if user is member
+    if (!crew.isMember(req.user._id)) {
+      return res.status(403).json({ error: 'Only crew members can join challenges' });
+    }
+    
+    const challenge = crew.challenges.id(req.params.challengeId);
+    if (!challenge) {
+      return res.status(404).json({ error: 'Challenge not found' });
+    }
+    
+    // Check if challenge is active
+    if (!challenge.isActive || new Date(challenge.endDate) < new Date()) {
+      return res.status(400).json({ error: 'Challenge is no longer active' });
+    }
+    
+    // Check if already participating
+    const isParticipating = challenge.participants.some(p => 
+      p.user.toString() === req.user._id.toString()
+    );
+    
+    if (isParticipating) {
+      return res.status(400).json({ error: 'Already participating in this challenge' });
+    }
+    
+    // Use model method to join challenge
+    await crew.joinChallenge(req.params.challengeId, req.user._id);
+    
+    res.json({ message: 'Successfully joined challenge' });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: error.message || 'Server error' });
+  }
+});
+
+// Leave a challenge
+router.post('/:crewId/challenges/:challengeId/leave', auth, async (req, res) => {
+  try {
+    const crew = await Crew.findById(req.params.crewId);
+    
+    if (!crew || !crew.isActive) {
+      return res.status(404).json({ error: 'Crew not found' });
+    }
+    
+    const challenge = crew.challenges.id(req.params.challengeId);
+    if (!challenge) {
+      return res.status(404).json({ error: 'Challenge not found' });
+    }
+    
+    // Remove participant
+    challenge.participants = challenge.participants.filter(p => 
+      p.user.toString() !== req.user._id.toString()
+    );
+    
+    await crew.save();
+    
+    res.json({ message: 'Left challenge successfully' });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Update challenge progress (usually called by backend automatically)
+router.put('/:crewId/challenges/:challengeId/progress', auth, async (req, res) => {
+  try {
+    const crew = await Crew.findById(req.params.crewId);
+    
+    if (!crew) {
+      return res.status(404).json({ error: 'Crew not found' });
+    }
+    
+    const challenge = crew.challenges.id(req.params.challengeId);
+    if (!challenge) {
+      return res.status(404).json({ error: 'Challenge not found' });
+    }
+    
+    const participant = challenge.participants.find(p => p.user.toString() === req.user._id.toString());
+    if (!participant) {
+      return res.status(400).json({ error: 'Not participating in this challenge' });
+    }
+    
+    const { progress } = req.body;
+    
+    // Use model method to update progress
+    await crew.updateChallengeProgress(req.params.challengeId, req.user._id, progress);
+    
+    res.json({ message: 'Progress updated', progress: participant.progress });
+  } catch (error) {
+    console.error('Error updating challenge progress:', error);
+    res.status(500).json({ error: 'Error updating challenge progress' });
+  }
+});
+
+// Get challenge leaderboard
+router.get('/:crewId/challenges/:challengeId/leaderboard', auth, async (req, res) => {
+  try {
+    const crew = await Crew.findById(req.params.crewId)
+      .populate('challenges.participants.user', 'username profile.displayName profile.avatar rankings.overall');
+    
+    if (!crew || !crew.isActive) {
+      return res.status(404).json({ error: 'Crew not found' });
+    }
+    
+    const challenge = crew.challenges.id(req.params.challengeId);
+    if (!challenge) {
+      return res.status(404).json({ error: 'Challenge not found' });
+    }
+    
+    // Sort participants by progress
+    const leaderboard = challenge.participants
+      .map(p => ({
+        user: p.user,
+        progress: p.progress,
+        completedAt: p.completedAt,
+        percentComplete: (p.progress / challenge.target) * 100,
+      }))
+      .sort((a, b) => {
+        // Completed challenges first
+        if (a.completedAt && !b.completedAt) return -1;
+        if (!a.completedAt && b.completedAt) return 1;
+        // Then by progress
+        return b.progress - a.progress;
+      });
+    
+    res.json({ 
+      challenge: {
+        name: challenge.name,
+        type: challenge.type,
+        target: challenge.target,
+        endDate: challenge.endDate,
+      },
+      leaderboard 
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Delete a challenge (admin only)
+router.delete('/:crewId/challenges/:challengeId', auth, async (req, res) => {
+  try {
+    const crew = await Crew.findById(req.params.crewId);
+    
+    if (!crew || !crew.isActive) {
+      return res.status(404).json({ error: 'Crew not found' });
+    }
+    
+    // Check if user is admin
+    if (!crew.isAdmin(req.user._id)) {
+      return res.status(403).json({ error: 'Only admins can delete challenges' });
+    }
+    
+    // Remove challenge from array
+    crew.challenges = crew.challenges.filter(c => 
+      c._id.toString() !== req.params.challengeId
+    );
+    
+    await crew.save();
+    
+    res.json({ message: 'Challenge deleted successfully' });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Helper functions for challenges
+function calculateXPReward(type, target) {
+  const baseXP = 100;
+  let multiplier = 1;
+  
+  switch(type) {
+    case 'total_workouts':
+      multiplier = target / 5; // 20 XP per workout
+      break;
+    case 'muscle_focus':
+      multiplier = target / 3; // 33 XP per muscle workout
+      break;
+    case 'consistency':
+      multiplier = target / 7; // 14 XP per consistent day
+      break;
+    case 'volume':
+      multiplier = Math.log10(target); // Logarithmic for volume
+      break;
+    default:
+      multiplier = 2;
+  }
+  
+  return Math.round(baseXP * multiplier);
+}
+
+function generateBadge(type, target) {
+  const badges = {
+    total_workouts: '💪',
+    muscle_focus: '🎯',
+    consistency: '🔥',
+    volume: '📈',
+    custom: '⭐'
+  };
+  
+  return badges[type] || '🏆';
+}
+
+// ============================================
+// CHALLENGE PROGRESS UPDATE (called from workout creation)
+// ============================================
+
+// This should be called after a workout is created
+router.post('/:crewId/challenges/update-progress', auth, async (req, res) => {
+  try {
+    const { workoutData } = req.body;
+    const crew = await Crew.findOne({
+      _id: req.params.crewId,
+      members: req.user._id,
+      isActive: true
+    });
+    
+    if (!crew) {
+      return res.status(404).json({ error: 'Crew not found or user not a member' });
+    }
+    
+    // Get active challenges the user is participating in
+    const activeChallenges = crew.challenges.filter(c => 
+      c.isActive && 
+      new Date(c.endDate) > new Date() &&
+      new Date(c.startDate) <= new Date() &&
+      c.participants.some(p => p.user.toString() === req.user._id.toString())
+    );
+    
+    const updates = [];
+    
+    for (const challenge of activeChallenges) {
+      const participant = challenge.participants.find(p => 
+        p.user.toString() === req.user._id.toString()
+      );
+      
+      if (!participant) continue;
+      
+      let progressIncrement = 0;
+      
+      switch(challenge.type) {
+        case 'total_workouts':
+          progressIncrement = 1;
+          break;
+          
+        case 'muscle_focus':
+          // Check if workout includes the target muscle group
+          const targetMuscle = challenge.metadata?.muscleGroup;
+          if (targetMuscle && workoutData.muscleGroups?.includes(targetMuscle)) {
+            progressIncrement = 1;
+          }
+          break;
+          
+        case 'consistency':
+          // This is handled by a daily cron job or streak service
+          progressIncrement = 0;
+          break;
+          
+        case 'volume':
+          // Add the total volume from the workout
+          progressIncrement = workoutData.totalVolume || 0;
+          break;
+          
+        case 'custom':
+          // Custom challenges need specific handling
+          progressIncrement = workoutData.customProgress || 0;
+          break;
+      }
+      
+      if (progressIncrement > 0) {
+        const newProgress = participant.progress + progressIncrement;
+        
+        // Use model method to update progress
+        await crew.updateChallengeProgress(challenge._id, req.user._id, newProgress);
+        
+        // Check if challenge is completed
+        if (newProgress >= challenge.target && !participant.completedAt) {
+          // Award XP to crew
+          await crew.addXP(challenge.rewards.xp);
+          
+          updates.push({
+            challengeName: challenge.name,
+            completed: true,
+            newProgress,
+            xpAwarded: challenge.rewards.xp,
+          });
+        } else {
+          updates.push({
+            challengeName: challenge.name,
+            completed: false,
+            newProgress,
+            percentComplete: (newProgress / challenge.target) * 100,
+          });
+        }
+      }
+    }
+    
+    res.json({ updates });
+  } catch (error) {
+    console.error('Challenge progress update error:', error);
+    res.status(500).json({ error: 'Failed to update challenge progress' });
+  }
+});
+
 module.exports = router;
