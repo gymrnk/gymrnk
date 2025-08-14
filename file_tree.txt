@@ -1,0 +1,195 @@
+.
+├── backend
+│   ├── controllers
+│   │   └── workoutController.DEAD.txt
+│   ├── middleware
+│   │   ├── auth.js
+│   │   └── socketAuth.js
+│   ├── models
+│   │   ├── Conversation.js
+│   │   ├── Crew.js
+│   │   ├── Exercise.js
+│   │   ├── Message.js
+│   │   ├── PlanRating.js
+│   │   ├── Post.js
+│   │   ├── Ranking.js
+│   │   ├── User.js
+│   │   ├── UserPlanProgress.js
+│   │   ├── WeeklySnapshot.js
+│   │   ├── Workout.js
+│   │   ├── WorkoutPlan.js
+│   │   └── WorkoutTemplate.js
+│   ├── package-lock.json
+│   ├── package.json
+│   ├── railway.json
+│   ├── routes
+│   │   ├── auth.js
+│   │   ├── crews.js
+│   │   ├── exercises.js
+│   │   ├── leaderboards.js
+│   │   ├── messages.js
+│   │   ├── posts.js
+│   │   ├── rankings.js
+│   │   ├── streaks.js
+│   │   ├── templates.js
+│   │   ├── users.js
+│   │   ├── workoutPlans.js
+│   │   └── workouts.js
+│   ├── scripts
+│   │   ├── backfillWeeklySnapshots.js
+│   │   ├── debugDatabase.js
+│   │   ├── fixRollingWindowRankings.js
+│   │   ├── fixZeroScores.js
+│   │   ├── generateSampleData.js
+│   │   ├── generateSampleDataFast.js
+│   │   ├── recalculateAllRankings.js
+│   │   ├── seedDatabase.js
+│   │   └── updateRankings.js
+│   ├── server.js
+│   ├── services
+│   │   ├── consistencyChallengeService.js
+│   │   ├── continuousExpirationService.js
+│   │   ├── rankingQueue.js
+│   │   ├── rankingSystem.js
+│   │   ├── s3Upload.js
+│   │   ├── smartRankingUpdater.js
+│   │   ├── streakService.js
+│   │   ├── weeklySnapshotService.js
+│   │   └── workoutValidationService.js
+│   ├── socket
+│   │   └── messageHandlers.js
+│   └── yarn.lock
+├── file_tree.txt
+└── frontend
+    ├── app.json
+    ├── App.tsx
+    ├── assets
+    │   ├── adaptive-icon.png
+    │   ├── favicon.png
+    │   ├── icon.png
+    │   └── splash.png
+    ├── babel.config.js
+    ├── package.json
+    ├── src
+    │   ├── components
+    │   │   ├── ActivePlanCard.tsx
+    │   │   ├── AnimatedGymRnkLogo.tsx
+    │   │   ├── chat
+    │   │   │   ├── ChatButton.tsx
+    │   │   │   ├── ChatPopup.tsx
+    │   │   │   ├── ChatScreen.tsx
+    │   │   │   ├── ConversationList.tsx
+    │   │   │   ├── GroupInfoModal.tsx
+    │   │   │   ├── MessageBubble.tsx
+    │   │   │   └── NewChatModal.tsx
+    │   │   ├── ConsistencyBadge.tsx
+    │   │   ├── CrewXPDisplay.tsx
+    │   │   ├── ExerciseCard.tsx
+    │   │   ├── GymRnkLogo.tsx
+    │   │   ├── LeaderboardHeader.tsx
+    │   │   ├── LeaderboardItem.tsx
+    │   │   ├── MuscleHeatmap.tsx
+    │   │   ├── PlanRatingModal.tsx
+    │   │   ├── PointsBreakdown.tsx
+    │   │   ├── PostCard.tsx
+    │   │   ├── ProfileStats.tsx
+    │   │   ├── RankBadge.tsx
+    │   │   ├── ReactionBar.tsx
+    │   │   ├── SharePostModal.tsx
+    │   │   ├── StatsCard.tsx
+    │   │   ├── StreakCalendar.tsx
+    │   │   ├── StreakDisplay.tsx
+    │   │   ├── StreakNotification.tsx
+    │   │   ├── UserStatsWidget.tsx
+    │   │   ├── WorkoutSummary.tsx
+    │   │   └── YourRankCard.tsx
+    │   ├── config
+    │   │   ├── toast.tsx
+    │   │   └── workoutTemplates.ts
+    │   ├── constants
+    │   │   └── index.ts
+    │   ├── contexts
+    │   │   ├── AuthContext.tsx
+    │   │   ├── ChatContext.tsx
+    │   │   └── ThemeContext.tsx
+    │   ├── navigation
+    │   │   ├── AuthNavigator.tsx
+    │   │   ├── CrewNavigator.tsx
+    │   │   ├── HomeNavigator.tsx
+    │   │   ├── LeaderboardNavigator.tsx
+    │   │   ├── LeaderboardStack.tsx
+    │   │   ├── MainNavigator.tsx
+    │   │   ├── ProfileNavigator.tsx
+    │   │   ├── RootNavigator.tsx
+    │   │   └── WorkoutNavigator.tsx
+    │   ├── screens
+    │   │   ├── auth
+    │   │   │   ├── LoginScreen.tsx
+    │   │   │   ├── RegisterScreen.tsx
+    │   │   │   └── WelcomeScreen.tsx
+    │   │   ├── CreatePostScreen.tsx
+    │   │   ├── crew
+    │   │   │   ├── CreateChallengeModal.tsx
+    │   │   │   ├── CreateCrewScreen.tsx
+    │   │   │   ├── CrewAnalyticsScreen.tsx
+    │   │   │   ├── CrewChallengesScreen.tsx
+    │   │   │   ├── CrewDetailsScreen.tsx
+    │   │   │   ├── CrewDiscoveryScreen.tsx
+    │   │   │   ├── EditCrewScreen.tsx
+    │   │   │   └── JoinCrewScreen.tsx
+    │   │   ├── home
+    │   │   │   ├── HomeScreen.tsx
+    │   │   │   └── PostDetailScreen.tsx
+    │   │   ├── leaderboard
+    │   │   │   ├── CrewsLeaderboardScreen.tsx
+    │   │   │   ├── FriendsLeaderboardScreen.tsx
+    │   │   │   ├── GlobalLeaderboardScreen.tsx
+    │   │   │   └── MyRankingsScreen.tsx
+    │   │   ├── LoadingScreen.tsx
+    │   │   ├── profile
+    │   │   │   ├── ChangePasswordScreen.tsx
+    │   │   │   ├── EditProfileScreen.tsx
+    │   │   │   ├── FriendsScreen.tsx
+    │   │   │   ├── ProfileScreen.tsx
+    │   │   │   ├── SettingsScreen.tsx
+    │   │   │   └── ViewProfileScreen.tsx
+    │   │   ├── UserProfileScreen.tsx
+    │   │   └── workout
+    │   │       ├── ActiveWorkoutScreen.tsx
+    │   │       ├── CreatePlanScreen.tsx
+    │   │       ├── CreateTemplateScreen.tsx
+    │   │       ├── EditPlanScreen.tsx
+    │   │       ├── ExerciseSelectionScreen.tsx
+    │   │       ├── MarketplaceScreen.tsx
+    │   │       ├── MyPlansScreen.tsx
+    │   │       ├── MyTemplatesScreen.tsx
+    │   │       ├── PlanAnalyticsScreen.tsx
+    │   │       ├── PlanDayScreen.tsx
+    │   │       ├── PlanDetailScreen.tsx
+    │   │       ├── PlanMarketplaceScreen.tsx
+    │   │       ├── ProgressScreen.tsx
+    │   │       ├── StartWorkoutScreen.tsx
+    │   │       ├── TemplateDetailScreen.tsx
+    │   │       ├── WorkoutHistoryScreen.tsx
+    │   │       └── WorkoutHomeScreen.tsx
+    │   ├── services
+    │   │   ├── api.ts
+    │   │   ├── auth.service.ts
+    │   │   ├── crew.service.ts
+    │   │   ├── exercise.service.ts
+    │   │   ├── index.ts
+    │   │   ├── message.service.ts
+    │   │   ├── plan.service.ts
+    │   │   ├── post.service.ts
+    │   │   ├── ranking.service.ts
+    │   │   ├── socket.service.ts
+    │   │   ├── streak.service.ts
+    │   │   ├── template.service.ts
+    │   │   ├── user.service.ts
+    │   │   └── workout.service.ts
+    │   └── types
+    │       └── index.ts
+    ├── tsconfig.json
+    └── yarn.lock
+
+27 directories, 166 files

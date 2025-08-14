@@ -322,6 +322,82 @@ router.post('/:id/like', auth, async (req, res) => {
   }
 });
 
+router.get('/user/:userId', auth, async (req, res) => {
+  try {
+    const { page = 1, limit = 20, sort = 'recent' } = req.query;
+    const skip = (page - 1) * limit;
+    const targetUserId = req.params.userId;
+    
+    // Import User model
+    const User = require('../models/User');
+    
+    // Check relationship
+    const isOwner = req.user._id.toString() === targetUserId;
+    const user = await User.findById(req.user._id).populate('friends');
+    const isFriend = user.friends.some(f => f._id.toString() === targetUserId);
+    
+    // Build visibility filter
+    let visibilityFilter;
+    if (isOwner) {
+      // Owner can see all their templates
+      visibilityFilter = {};
+    } else if (isFriend) {
+      // Friends can see global and friends-only templates
+      visibilityFilter = { visibility: { $in: ['global', 'friends'] } };
+    } else {
+      // Others can only see global templates
+      visibilityFilter = { visibility: 'global' };
+    }
+    
+    // Build sort
+    let sortQuery = {};
+    if (sort === 'popular') {
+      sortQuery = { usageCount: -1, 'likes.length': -1 };
+    } else {
+      sortQuery = { createdAt: -1 };
+    }
+    
+    const templates = await WorkoutTemplate.find({
+      creator: targetUserId,
+      isActive: true,
+      ...visibilityFilter
+    })
+      .sort(sortQuery)
+      .skip(skip)
+      .limit(parseInt(limit))
+      .populate('creator', 'username profile.displayName profile.avatar rankings.overall')
+      .populate('exercises.exercise', 'name muscleGroup category');
+    
+    const total = await WorkoutTemplate.countDocuments({
+      creator: targetUserId,
+      isActive: true,
+      ...visibilityFilter
+    });
+    
+    // Add isLiked field and calculate total volume for each template
+    const templatesWithExtras = templates.map(template => {
+      const templateObj = template.toObject();
+      templateObj.isLiked = template.isLikedBy(req.user._id);
+      templateObj.likeCount = template.likes.length;
+      templateObj.totalVolume = template.calculateTotalVolume();
+      return templateObj;
+    });
+    
+    res.json({
+      templates: templatesWithExtras,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total,
+        pages: Math.ceil(total / limit)
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching user templates:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // Use template (increment usage count)
 router.post('/:id/use', auth, async (req, res) => {
   try {

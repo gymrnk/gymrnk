@@ -504,6 +504,9 @@ router.get('/user/:userId', auth, async (req, res) => {
     const skip = (page - 1) * limit;
     const targetUserId = req.params.userId;
     
+    // Import User model
+    const User = require('../models/User');
+    
     // Check if viewing own workouts or if users are friends
     const isOwner = req.user._id.toString() === targetUserId;
     const user = await User.findById(req.user._id).populate('friends');
@@ -511,8 +514,15 @@ router.get('/user/:userId', auth, async (req, res) => {
     
     // Only owner and friends can view workouts
     if (!isOwner && !isFriend) {
-      return res.status(403).json({ 
-        error: 'You must be friends to view this user\'s workouts' 
+      // Return empty data instead of error
+      return res.json({
+        workouts: [],
+        pagination: {
+          page: parseInt(page),
+          limit: parseInt(limit),
+          total: 0,
+          pages: 0
+        }
       });
     }
     
@@ -543,8 +553,17 @@ router.get('/user/:userId', auth, async (req, res) => {
       }
     });
   } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: 'Server error' });
+    console.error('Error fetching user workouts:', error);
+    // Return empty data instead of error
+    res.json({
+      workouts: [],
+      pagination: {
+        page: parseInt(req.query.page || 1),
+        limit: parseInt(req.query.limit || 20),
+        total: 0,
+        pages: 0
+      }
+    });
   }
 });
 

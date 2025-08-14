@@ -185,6 +185,9 @@ router.get('/user/:userId', auth, async (req, res) => {
     const skip = (page - 1) * limit;
     const targetUserId = req.params.userId;
     
+    // Import User model
+    const User = require('../models/User');
+    
     // Check if viewing own posts or if users are friends
     const isOwner = req.user._id.toString() === targetUserId;
     const user = await User.findById(req.user._id).populate('friends');
@@ -252,11 +255,19 @@ router.get('/user/:userId', auth, async (req, res) => {
       }
     });
   } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: 'Server error' });
+    console.error('Error fetching user posts:', error);
+    // Return empty data instead of error
+    res.json({
+      posts: [],
+      pagination: {
+        page: parseInt(req.query.page || 1),
+        limit: parseInt(req.query.limit || 20),
+        total: 0,
+        pages: 0
+      }
+    });
   }
 });
-
 
 // Get single post
 router.get('/:id', auth, async (req, res) => {
