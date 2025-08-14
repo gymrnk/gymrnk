@@ -22,15 +22,21 @@ router.get('/', auth, async (req, res) => {
     
     const crews = await Crew.find(query)
       .populate('createdBy', 'username profile.displayName profile.avatar')
-      .select('name description logo members createdBy createdAt')
+      .select('name description logo members createdBy createdAt maxMembers level xp stats')
       .limit(parseInt(limit))
       .skip(parseInt(offset))
-      .sort({ members: -1 });
+      .sort({ 'members.length': -1 });
     
-    const crewsWithMemberCount = crews.map(crew => ({
-      ...crew.toObject(),
-      memberCount: crew.members.length
-    }));
+    const crewsWithMemberCount = crews.map(crew => {
+      const crewObj = crew.toObject();
+      // Don't send full members array to non-members, just the count
+      const memberCount = crew.members ? crew.members.length : 0;
+      return {
+        ...crewObj,
+        memberCount: memberCount,
+        members: [] // Don't expose member IDs in list view
+      };
+    });
     
     res.json(crewsWithMemberCount);
   } catch (error) {
@@ -70,7 +76,6 @@ router.get('/my-crew', auth, async (req, res) => {
 router.get('/:crewId', auth, async (req, res) => {
   try {
     const crew = await Crew.findById(req.params.crewId)
-      .populate('members', 'username profile.displayName profile.avatar rankings.overall')
       .populate('admins', 'username profile.displayName profile.avatar')
       .populate('createdBy', 'username profile.displayName profile.avatar');
     
@@ -79,9 +84,26 @@ router.get('/:crewId', auth, async (req, res) => {
     }
     
     const crewData = crew.toObject();
-    crewData.memberCount = crewData.members.length;
-    crewData.isMember = crew.isMember(req.user._id);
-    crewData.isAdmin = crew.isAdmin(req.user._id);
+    const isMember = crew.isMember(req.user._id);
+    const isAdmin = crew.isAdmin(req.user._id);
+    
+    // IMPORTANT: Store the actual member count before population
+    const actualMemberCount = crew.members.length;
+    
+    // Only populate full member details if user is a member of the crew
+    if (isMember) {
+      // Populate members for crew members only
+      await crew.populate('members', 'username profile.displayName profile.avatar rankings.overall');
+      crewData.members = crew.members;
+    } else {
+      // For non-members, don't include the members array (privacy)
+      crewData.members = [];
+    }
+    
+    // ALWAYS include the correct member count
+    crewData.memberCount = actualMemberCount;
+    crewData.isMember = isMember;
+    crewData.isAdmin = isAdmin;
     
     res.json(crewData);
   } catch (error) {
@@ -427,6 +449,110 @@ router.get('/:crewId/analytics/muscle-groups', auth, async (req, res) => {
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Get pending join requests for a crew (Admin only)
+router.get('/:crewId/pending', auth, async (req, res) => {
+  try {
+    const crew = await Crew.findById(req.params.crewId)
+      .populate('pendingMembers.user', 'username profile.displayName profile.avatar rankings.overall');
+    
+    if (!crew || !crew.isActive) {
+      return res.status(404).json({ error: 'Crew not found' });
+    }
+    
+    // Check if user is admin
+    if (!crew.isAdmin(req.user._id)) {
+      return res.status(403).json({ error: 'Only admins can view pending requests' });
+    }
+    
+    res.json({
+      requests: crew.pendingMembers || [],
+      count: crew.pendingMembers?.length || 0
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Request to join crew (for private crews)
+router.post('/:crewId/request', auth, async (req, res) => {
+  try {
+    const { message } = req.body;
+    const crew = await Crew.findById(req.params.crewId);
+    
+    if (!crew || !crew.isActive) {
+      return res.status(404).json({ error: 'Crew not found' });
+    }
+    
+    // Check if user already has a crew
+    const user = await User.findById(req.user._id);
+    if (user.crew) {
+      return res.status(400).json({ error: 'You can only be in one crew at a time' });
+    }
+    
+    // Request to join
+    await crew.requestToJoin(req.user._id, message);
+    
+    res.json({ message: 'Join request sent successfully' });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: error.message || 'Server error' });
+  }
+});
+
+// Approve join request (Admin only)
+router.post('/:crewId/approve/:userId', auth, async (req, res) => {
+  try {
+    const crew = await Crew.findById(req.params.crewId);
+    
+    if (!crew || !crew.isActive) {
+      return res.status(404).json({ error: 'Crew not found' });
+    }
+    
+    // Approve member
+    await crew.approveMember(req.params.userId, req.user._id);
+    
+    // Update user's crew
+    const user = await User.findById(req.params.userId);
+    if (user) {
+      user.crew = crew._id;
+      user.crewJoinedAt = new Date();
+      await user.save();
+    }
+    
+    // Add to crew conversation
+    const conversation = await Conversation.findById(crew.conversation);
+    if (conversation && !conversation.participants.includes(req.params.userId)) {
+      conversation.participants.push(req.params.userId);
+      await conversation.save();
+    }
+    
+    res.json({ message: 'Member approved successfully' });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: error.message || 'Server error' });
+  }
+});
+
+// Reject join request (Admin only)
+router.post('/:crewId/reject/:userId', auth, async (req, res) => {
+  try {
+    const crew = await Crew.findById(req.params.crewId);
+    
+    if (!crew || !crew.isActive) {
+      return res.status(404).json({ error: 'Crew not found' });
+    }
+    
+    // Reject member
+    await crew.rejectMember(req.params.userId, req.user._id);
+    
+    res.json({ message: 'Join request rejected' });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: error.message || 'Server error' });
   }
 });
 
