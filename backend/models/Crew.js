@@ -74,7 +74,7 @@ const crewSchema = new mongoose.Schema({
     endDate: Date,
     type: {
       type: String,
-      enum: ['total_workouts', 'muscle_focus', 'consistency', 'volume', 'custom']
+      enum: ['total_workouts', 'muscle_focus', 'consistency', 'volume']
     },
     target: Number,
     progress: Number,

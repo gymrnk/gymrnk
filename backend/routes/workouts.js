@@ -248,8 +248,8 @@ router.post('/', auth, [
                 console.log(`Volume challenge: +${progressIncrement} progress`);
                 break;
                 
-              case 'custom':
-                // Custom challenges need specific handling based on metadata
+              case 'consistency':
+                // Consistency challenges are handled by the daily cron job
                 progressIncrement = 0;
                 break;
             }

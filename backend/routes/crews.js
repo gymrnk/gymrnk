@@ -1039,6 +1039,31 @@ router.put('/:crewId', auth, async (req, res) => {
   }
 });
 
+// Get crew XP stats
+router.get('/:crewId/xp-stats', auth, async (req, res) => {
+  try {
+    const crew = await Crew.findById(req.params.crewId);
+    
+    if (!crew || !crew.isActive) {
+      return res.status(404).json({ error: 'Crew not found' });
+    }
+    
+    const xpForNextLevel = crew.level * 100;
+    const progressPercentage = (crew.xp / xpForNextLevel) * 100;
+    
+    res.json({
+      level: crew.level,
+      currentXP: crew.xp,
+      xpForNextLevel,
+      progressPercentage: Math.round(progressPercentage),
+      totalXPEarned: (crew.level - 1) * 100 + crew.xp, // Approximate total
+      achievements: crew.achievements || []
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // Remove member from crew
 router.delete('/:crewId/members/:userId', auth, async (req, res) => {
   try {
