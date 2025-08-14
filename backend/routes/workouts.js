@@ -498,6 +498,56 @@ router.get('/stats', auth, async (req, res) => {
   }
 });
 
+router.get('/user/:userId', auth, async (req, res) => {
+  try {
+    const { page = 1, limit = 20, sort = 'recent' } = req.query;
+    const skip = (page - 1) * limit;
+    const targetUserId = req.params.userId;
+    
+    // Check if viewing own workouts or if users are friends
+    const isOwner = req.user._id.toString() === targetUserId;
+    const user = await User.findById(req.user._id).populate('friends');
+    const isFriend = user.friends.some(f => f._id.toString() === targetUserId);
+    
+    // Only owner and friends can view workouts
+    if (!isOwner && !isFriend) {
+      return res.status(403).json({ 
+        error: 'You must be friends to view this user\'s workouts' 
+      });
+    }
+    
+    // Build sort
+    let sortQuery = {};
+    if (sort === 'popular') {
+      sortQuery = { 'hypertrophyScore.total': -1, date: -1 };
+    } else {
+      sortQuery = { date: -1 };
+    }
+    
+    const workouts = await Workout.find({ user: targetUserId })
+      .sort(sortQuery)
+      .skip(skip)
+      .limit(parseInt(limit))
+      .populate('exercises.exercise', 'name muscleGroup')
+      .select('date exercises duration hypertrophyScore notes');
+    
+    const total = await Workout.countDocuments({ user: targetUserId });
+    
+    res.json({
+      workouts,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total,
+        pages: Math.ceil(total / limit)
+      }
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // Get weekly progress using snapshots
 router.get('/weekly-progress', auth, async (req, res) => {
   try {

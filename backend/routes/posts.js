@@ -179,6 +179,85 @@ router.get('/discover', auth, async (req, res) => {
   }
 });
 
+router.get('/user/:userId', auth, async (req, res) => {
+  try {
+    const { page = 1, limit = 20, sort = 'recent' } = req.query;
+    const skip = (page - 1) * limit;
+    const targetUserId = req.params.userId;
+    
+    // Check if viewing own posts or if users are friends
+    const isOwner = req.user._id.toString() === targetUserId;
+    const user = await User.findById(req.user._id).populate('friends');
+    const isFriend = user.friends.some(f => f._id.toString() === targetUserId);
+    
+    // Build visibility filter based on relationship
+    let visibilityFilter;
+    if (isOwner) {
+      // Owner can see all their posts
+      visibilityFilter = {};
+    } else if (isFriend) {
+      // Friends can see public and friends-only posts
+      visibilityFilter = { visibility: { $in: ['public', 'friends'] } };
+    } else {
+      // Others can only see public posts
+      visibilityFilter = { visibility: 'public' };
+    }
+    
+    // Build sort
+    let sortQuery = {};
+    if (sort === 'popular') {
+      sortQuery = { 'likes.length': -1, createdAt: -1 };
+    } else {
+      sortQuery = { createdAt: -1 };
+    }
+    
+    const posts = await Post.find({
+      author: targetUserId,
+      isDeleted: false,
+      ...visibilityFilter
+    })
+      .sort(sortQuery)
+      .skip(skip)
+      .limit(parseInt(limit))
+      .populate({
+        path: 'author',
+        select: '_id username profile.displayName profile.avatar rankings streak',
+        populate: {
+          path: 'crew',
+          select: 'name logo'
+        }
+      })
+      .populate({
+        path: 'content.workout',
+        populate: {
+          path: 'exercises.exercise',
+          select: 'name muscleGroup'
+        }
+      })
+      .populate('comments.user', '_id username profile.displayName profile.avatar');
+    
+    const total = await Post.countDocuments({
+      author: targetUserId,
+      isDeleted: false,
+      ...visibilityFilter
+    });
+    
+    res.json({
+      posts,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total,
+        pages: Math.ceil(total / limit)
+      }
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+
 // Get single post
 router.get('/:id', auth, async (req, res) => {
   try {
