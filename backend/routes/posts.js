@@ -179,6 +179,82 @@ router.get('/discover', auth, async (req, res) => {
   }
 });
 
+router.get('/my', auth, async (req, res) => {
+  try {
+    const { page = 1, limit = 20, sort = 'recent' } = req.query;
+    const skip = (page - 1) * limit;
+    
+    const sortOption = sort === 'popular' 
+      ? { 'likes.length': -1, createdAt: -1 }
+      : { createdAt: -1 };
+    
+    const query = { author: req.user.id };
+    
+    const [posts, total] = await Promise.all([
+      Post.find(query)
+        .populate('author', 'username email profile rankings crew streak')
+        .populate('content.workout')
+        .sort(sortOption)
+        .skip(skip)
+        .limit(parseInt(limit))
+        .lean(),
+      Post.countDocuments(query)
+    ]);
+    
+    res.json({
+      posts,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total,
+        pages: Math.ceil(total / parseInt(limit))
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching user posts:', error);
+    res.status(500).json({ error: 'Failed to fetch posts' });
+  }
+});
+
+// Update post visibility
+router.patch('/:id/visibility', auth, async (req, res) => {
+  try {
+    const { visibility } = req.body;
+    
+    // Validate visibility value
+    if (!['public', 'friends', 'private'].includes(visibility)) {
+      return res.status(400).json({ error: 'Invalid visibility value' });
+    }
+    
+    // Find the post and check ownership
+    const post = await Post.findById(req.params.id);
+    
+    if (!post) {
+      return res.status(404).json({ error: 'Post not found' });
+    }
+    
+    // Check if the user owns the post
+    if (post.author.toString() !== req.user.id) {
+      return res.status(403).json({ error: 'You can only edit your own posts' });
+    }
+    
+    // Update visibility
+    post.visibility = visibility;
+    await post.save();
+    
+    // Return updated post with populated fields
+    const updatedPost = await Post.findById(post._id)
+      .populate('author', 'username email profile rankings crew streak')
+      .populate('content.workout')
+      .lean();
+    
+    res.json(updatedPost);
+  } catch (error) {
+    console.error('Error updating post visibility:', error);
+    res.status(500).json({ error: 'Failed to update post visibility' });
+  }
+});
+
 router.get('/user/:userId', auth, async (req, res) => {
   try {
     const { page = 1, limit = 20, sort = 'recent' } = req.query;
